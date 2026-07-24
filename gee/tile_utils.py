@@ -1,46 +1,119 @@
+# =============================================================================
+# FILE OVERVIEW: gee/tile_utils.py
+# -----------------------------------------------------------------------------
+# Purpose: tiling and chipping utilities for the Amazon Mining Watch (AMW)
+#   mining-detector pipeline.  Converts vector regions (GeoJSON, EPSG:4326)
+#   into fixed-size raster tiles on the Descartes Labs "DLTile" UTM grid, and
+#   slices downloaded tile rasters into small overlapping "chips" that are the
+#   classifier's unit of prediction.
+#
+# Invocation: imported as a library; never run directly.  Main consumers are
+#   gee/gee.py (GEE_Data_Extractor / InferenceEngine) and
+#   gee/inference_pipeline.py (CLI bulk inference), plus training notebooks.
+#
+# On-disk inputs/outputs: none.  All functions operate on in-memory numpy
+#   arrays, shapely geometries, and GeoDataFrames.
+#
+# Pipeline position: FIRST geometric step.  region GeoJSON -> tiles
+#   (create_tiles / tiles_for_geometry; 576 px at 10 m/px = 5.76 km per side,
+#   ~33.2 km^2 each) -> per-tile imagery from Google Earth Engine (gee.py) ->
+#   chips (cut_chips; 48 px = 480 m, ~23 ha, stride 24 -> 23x23 = 529
+#   overlapping chips/tile) -> SSL4EO embeddings -> Keras MLP ensemble ->
+#   per-chip mining confidence.
+#
+# Why DLTile: descarteslabs.geo.DLTile defines a FIXED, deterministic global
+#   grid of UTM tiles (the sole reason the descarteslabs package is a
+#   dependency).  The same region always yields the same tiles, and tile.key
+#   is a unique string ID used in cache filenames -- so runs over different
+#   date ranges align exactly, enabling time-series comparison of the same
+#   ground footprints.
+# =============================================================================
 
-from affine import Affine
-from descarteslabs.geo import DLTile
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import numpy as np
-from shapely.geometry import Point, Polygon, box
+from affine import Affine  # affine geotransforms (pixel <-> map coordinates)
+from descarteslabs.geo import DLTile  # fixed global UTM tile grid (see overview)
+import geopandas as gpd  # GeoDataFrame/GeoSeries containers + CRS reprojection
+import matplotlib.pyplot as plt  # not used at runtime; kept for debugging plots
+import numpy as np  # array math for rasters/chips
+from shapely.geometry import Point, Polygon, box  # geometry constructors
 
 class CenteredTile:
     """
     DLTile-like tile centered on a given lat/lon, not snapped to DL global grid.
 
     Attributes match DLTile where possible (key, crs, bounds, geotrans, shape).
+
+    Purpose: a DLTile "impostor" for point-based scoring.  A real DLTile is
+    snapped to the fixed global grid, so an arbitrary lat/lon usually falls
+    off-center; this class instead builds a tile whose footprint is centered
+    exactly on the requested point (snapped only to the 10 m pixel grid).
+    Used by tiles_for_geometry() when the input geometry is Point/MultiPoint.
+
+    Constructor inputs:
+        lat (float): latitude of tile center, decimal degrees (EPSG:4326).
+        lon (float): longitude of tile center, decimal degrees (EPSG:4326).
+        tilesize (int): tile edge length in pixels (default 48).
+        resolution (float): ground sample distance, meters/pixel (default
+            10.0, matching Sentinel-2's 10 m bands).
+
+    Attributes produced:
+        crs (str): UTM zone EPSG code, inherited from a grid-snapped DLTile.
+        geotrans (Affine): north-up geotransform in UTM meters.
+        bounds (tuple): (minx, miny, maxx, maxy) in UTM meters.
+        shape (tuple): (tilesize, tilesize) raster shape in pixels.
+        geometry (shapely Polygon): footprint reprojected to EPSG:4326.
+        key (str): unique ID embedding lat/lon/resolution/size; used in
+            cache filenames so repeated runs share the same tile identity.
+
+    Side effects: none (pure in-memory construction).
     """
 
     def __init__(self, lat, lon, tilesize=48, resolution=10.0):
-        self.lat = float(lat)
-        self.lon = float(lon)
-        self.tilesize = int(tilesize)
-        self.resolution = float(resolution)
-        self.pad = 0
+        """Build the centered tile (see class docstring for parameters).
 
+        Output: none (populates the attributes documented on the class).
+        Side effects: none on disk; performs two in-memory CRS reprojections.
+        """
+        self.lat = float(lat)    # center latitude, degrees
+        self.lon = float(lon)    # center longitude, degrees
+        self.tilesize = int(tilesize)        # tile edge, pixels
+        self.resolution = float(resolution)  # ground sample distance, m/px
+        self.pad = 0  # no border pixels; attribute kept for DLTile API parity
+
+        # Build a REAL grid-snapped DLTile at this location first, solely to
+        # inherit the correct UTM zone CRS for this lon/lat; the snapped tile
+        # itself is then discarded (we re-center everything below).
         snap_tile = DLTile.from_latlon(
             self.lat, self.lon,
             resolution=self.resolution,
             tilesize=self.tilesize,
             pad=self.pad
         )
-        self.crs = snap_tile.crs
+        self.crs = snap_tile.crs  # UTM zone EPSG code, e.g. "EPSG:32720"
 
+        # Project the requested center point from lon/lat degrees into UTM
+        # meters -- all tile-extent math below happens in meters, not degrees.
         point = gpd.GeoSeries(
             [Point(self.lon, self.lat)], crs="EPSG:4326").to_crs(self.crs)
-        x_center, y_center = float(point.x.iloc[0]), float(point.y.iloc[0])
+        x_center, y_center = float(point.x.iloc[0]), float(point.y.iloc[0])  # m
 
+        # Half the tile's ground extent in meters: tilesize px * m/px / 2
+        # (48 px * 10 m / 2 = 240 m for the default point-scoring tile).
         half_m = (self.tilesize * self.resolution) / 2.0
-        raw_minx = x_center - half_m
-        raw_maxx = x_center + half_m
-        raw_miny = y_center - half_m
-        raw_maxy = y_center + half_m
+        raw_minx = x_center - half_m  # unsnapped west edge (m)
+        raw_maxx = x_center + half_m  # unsnapped east edge (m)
+        raw_miny = y_center - half_m  # unsnapped south edge (m)
+        raw_maxy = y_center + half_m  # unsnapped north edge (m)
 
+        # Snap the upper-left corner OUTWARD onto the 10 m pixel grid so pixel
+        # edges land on whole multiples of the resolution: floor() pushes the
+        # west edge west, ceil() pushes the north edge north.
         ulx = np.floor(raw_minx / self.resolution) * self.resolution
         uly = np.ceil(raw_maxy / self.resolution) * self.resolution
 
+        # Standard north-up geotransform: translate to the UL corner, then
+        # scale by the pixel size.  The y pixel size is NEGATIVE because the
+        # row index grows southward while the y (northing) coordinate grows
+        # northward.
         self.geotrans = Affine.translation(ulx, uly) * Affine.scale(
             self.resolution, -self.resolution)
 

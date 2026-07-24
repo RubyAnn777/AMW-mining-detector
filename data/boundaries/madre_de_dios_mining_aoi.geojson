@@ -1,0 +1,20 @@
+{
+"type": "FeatureCollection",
+"name": "madre_de_dios_mining_aoi",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature",
+  "properties": {
+    "name": "Madre de Dios mining corridor (approx. bbox)",
+    "note": "Covers Huepetuhe, Delta-1, La Pampa and the Colorado/Inambari mining corridor, southern Peruvian Amazon. Rectangle drawn 2026-07-17 for AMW model runs; boundaries approximate, chosen to include known ASGM hotspots.",
+    "area_km2_approx": 20900
+  },
+  "geometry": { "type": "Polygon", "coordinates": [ [
+    [ -70.75, -13.35 ],
+    [ -69.10, -13.35 ],
+    [ -69.10, -12.30 ],
+    [ -70.75, -12.30 ],
+    [ -70.75, -13.35 ]
+  ] ] } }
+]
+}
