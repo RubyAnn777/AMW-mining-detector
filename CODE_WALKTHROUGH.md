@@ -498,6 +498,9 @@ Path anatomy: `<inference_output_base>/<model_version>/<region>_<model_version>_
 
 ---
 
+hello this is a test
+
+
 ## Part IX — `postprocess.py`: from chips to polygons
 
 Run as: `python postprocess.py <detections.geojson> [more...] --threshold 0.925 --dissolve --low_area_conf_threshold 0.975 --outpath out.geojson`. Steps, in order:
