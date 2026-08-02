@@ -19,7 +19,7 @@
 # Inputs on disk : one GeoJSON of chip detections (typically EPSG:4326 chip
 #   squares with a per-chip score column, e.g. 'confidence' or 'prob').
 # Outputs on disk: `<input stem>-dissolved-<threshold>.geojson` next to the
-#   input (the threshold is interpolated literally, so 'None' when omitted).
+#   input (just `-dissolved` when no threshold is given; upstream fix 2026-07).
 # =============================================================================
 
 import argparse  # CLI parsing
@@ -74,8 +74,12 @@ def dissolve(path, threshold, column, buffer_width):
     df = gpd.GeoDataFrame(geometry=[dissolved]).explode().reset_index(drop=True)
     # Step 4: negative buffer undoes the inflation, restoring true outlines.
     df.geometry = df.geometry.buffer(-buffer_width, join_style=2)
-    # Output name embeds the threshold literally ('None' if not supplied).
-    outpath = path.split('.geojson')[0] + f'-dissolved-{threshold}.geojson'
+    # Output name embeds the threshold when one was supplied. Upstream fix
+    # (July 2026): plain '-dissolved' suffix otherwise, instead of
+    # interpolating the literal string 'None'.
+    base = path.split('.geojson')[0]
+    suffix = f'-dissolved-{threshold}' if threshold is not None else '-dissolved'
+    outpath = base + suffix + '.geojson'
     df.to_file(outpath)  # write dissolved polygons (driver inferred from ext)
 
 if __name__ == '__main__':
