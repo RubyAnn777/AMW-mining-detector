@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector
 
 # =============================================================================
 # FILE OVERVIEW — scripts/concatenate.py

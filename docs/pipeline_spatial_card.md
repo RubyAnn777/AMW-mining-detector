@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # Spatial / resolution pipeline card
 
 Scope: this document describes **only** the production model we will use — the

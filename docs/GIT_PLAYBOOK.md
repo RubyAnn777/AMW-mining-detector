@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # Git playbook for this fork
 
 How to keep this fork current with `earthrise-media/mining-detector` **without**
@@ -98,3 +99,38 @@ Notes:
 | Undo an un-committed take | `git restore --staged --worktree core/` then `git checkout HEAD -- core/` |
 | Where am I | `git status` / `git branch -a` |
 | Panic button | `git checkout backup-<date>` |
+
+
+---
+
+## Upstream sync — standard procedure (added 2026-08-02)
+
+The fork deletes ~450 upstream files (training data, old models, website prep
+— all in `_archive/`). At every merge, upstream edits to those files surface
+as delete/modify conflicts whose answer is always "stay deleted". This is
+automated:
+
+```bash
+bash scripts/sync_upstream.sh
+```
+
+What it does: refuses to run on a dirty tree → `git fetch upstream` → safety
+branch `backup-before-upstream-<date>` → `git merge upstream/main` →
+auto-resolves every DU conflict (Deleted by Us, modified Upstream) as
+"keep deleted" → commits if nothing else conflicts. REAL conflicts (both
+sides edited the same file) are listed and left for manual resolution —
+historically ~4-6 small ones per sync.
+
+Afterwards, always:
+
+```bash
+python3 scripts/provenance_report.py
+```
+
+This regenerates `docs/PROVENANCE.md` + `_archive/ARCHIVED_PATHS.txt` and
+warns about (a) fork files missing their first-line PROVENANCE tag and
+(b) new upstream training junk that matches archive patterns (new models,
+sampling locations, gallery images) — move those to `_archive/`, `git rm`
+them, commit.
+
+Rollback if a sync goes wrong: `git reset --hard backup-before-upstream-<date>`.

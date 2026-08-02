@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 """
 coverage.py — per-pixel cloud/coverage flags for the AMW inference pipeline.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 """
 analysis.py — statistical comparison of MONTHLY vs QUARTERLY composites for the
 mining time series (phase-one pilot, one AOI, one year).

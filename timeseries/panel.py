@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 """
 panel.py — build a per-period CHIP PANEL: model probability + cloud/coverage
 flags for EVERY 48-px chip in the AOI, one row per chip, one file per period.

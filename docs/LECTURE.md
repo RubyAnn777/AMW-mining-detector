@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # The Time-Series Code, Explained — A Lecture Course
 
 *Written for a reader who has never worked with shells, Git, or scientific

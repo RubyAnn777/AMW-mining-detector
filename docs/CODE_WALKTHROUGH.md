@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # The Complete Code Walkthrough
 
 > ## ⚠️ STATUS (2026-07-27): parts of this document describe the LEGACY model
@@ -168,7 +169,7 @@ jupyter lab                                                                # inf
 | `ee.EEException: Not signed up for Earth Engine` / `no project found` | Project not registered (§0.4 step 2) or `EE_PROJECT` unset/wrong |
 | `DefaultCredentialsError` / `Could not automatically determine credentials` | Missing ADC → `gcloud auth application-default login` |
 | `PERMISSION_DENIED ... Earth Engine API has not been used` | Enable the API in the console (§0.4 step 2) |
-| `ModuleNotFoundError: gee` or any package | venv not active, or running from the wrong dir (be in `gee/`) |
+| `ModuleNotFoundError: gee` or any package | venv not active, or running from the wrong dir (be in `core/`) |
 | `FileNotFoundError: .../dino_vit_small_patch16_224.pt` | Wrap script not run (§0.5) |
 | `command not found: gcloud` | Restart the terminal after install (PATH), or `brew reinstall --cask google-cloud-sdk` |
 | SSL certificate errors on macOS Python | Run `/Applications/Python 3.11/Install Certificates.command` |
@@ -567,11 +568,11 @@ Buffer by a hair (1e-5° ≈ 1 m) so squares that merely *touch* become connecte
 
 ## Part XI — Auxiliary tools
 
-**`gee/inference.ipynb`** — the interactive twin of the pipeline (your Phase-1 tool). Cells: (0) imports + autoreload; (1) region/model/dates + the three configs; (2) read region → `create_tiles` → build `InferenceEngine`; (3) `predict_on_tile(tiles[0])` single-tile smoke test; (4) `bulk_predict` full run; (5) `preds.explore()` — folium/Leaflet interactive map of detections right in the notebook.
+**`core/inference.ipynb`** — the interactive twin of the pipeline (your Phase-1 tool). Cells: (0) imports + autoreload; (1) region/model/dates + the three configs; (2) read region → `create_tiles` → build `InferenceEngine`; (3) `predict_on_tile(tiles[0])` single-tile smoke test; (4) `bulk_predict` full run; (5) `preds.explore()` — folium/Leaflet interactive map of detections right in the notebook.
 
 **`utils/gee_data_pull.py`** — dump raw composite GeoTIFFs for any AOI/collection/date window (no ML). Your best friend for the cloud-flag work: pull a month of imagery and *look* at the masked holes. Note it prepends `../gee` to `sys.path` to import `gee`/`tile_utils`, and importing `gee` triggers the auth-requiring `ee.Initialize`.
 
-**`scripts/concatenate.py`** — naive GeoJSON FeatureCollection merger (requires the legacy `crs` member; RFC 7946 files lack it). **`scripts/dissolve.py`** — standalone buffered dissolve (same math as `dissolve_patches`, but drops all attribute columns and writes `<input>-dissolved-<thr>.geojson`). **`gee/cloud_mask_filter.ipynb`** — reference-only training-era notebook showing how cloudy patches were reviewed (its `viz_tools` import now lives in `_archive/`; restore to run).
+**`scripts/concatenate.py`** — GeoJSON merger; rewritten upstream (July 2026) with geopandas — the legacy-`crs` requirement is gone. **`scripts/dissolve.py`** — standalone buffered dissolve (same math as `dissolve_patches`, but drops all attribute columns and writes `<input>-dissolved-<thr>.geojson`; plain `-dissolved` when no threshold — upstream fix 2026-07). **`core/cloud_mask_filter.ipynb`** — reference-only training-era notebook showing how cloudy patches were reviewed (its `viz_tools` import now lives in `_archive/`; restore to run).
 
 ---
 
@@ -594,7 +595,7 @@ Where time goes in a run: ~all of it is GEE downloads (seconds per tile, 8 in pa
 ## Part XIV — Traps, quirks, and known bugs (memorize this list)
 
 1. `import gee` calls `ee.Initialize` — no auth / no `EE_PROJECT` → import fails. Default project `'earthindex'` is Earth Genome's, not yours.
-2. `InferenceConfig.model_path` default is *relative* (`../models/...`) — run scripts from `gee/`.
+2. `InferenceConfig.model_path` default is *relative* (`../models/...`) — run scripts from `core/`.
 3. `inference_pipeline.py` logs tile area as "ha" but computes km² (×100 off). Log-only.
 4. `GEE_Data_Extractor` handlers reference `self.logger`, which is never set → a cache I/O failure raises `AttributeError` instead of a warning. Latent (only bites with `image_cache_dir` set and a corrupt file).
 5. `postprocess.py --ndvi_threshold` calls the removed `gee.Masker` → crash. Dead branch.

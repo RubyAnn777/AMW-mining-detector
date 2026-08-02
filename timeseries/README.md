@@ -1,7 +1,8 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # timeseries/ — monthly-vs-quarterly pilot (phase one)
 
 Our own code, deliberately **outside `core/`** so `git checkout upstream/main -- core/`
-can never clobber it (see `GIT_PLAYBOOK.md`). Pinned against upstream/main `c473933`.
+can never clobber it (see `GIT_PLAYBOOK.md`). Last synced with upstream/main `bbbcb2d` (2026-08-02, merge `bac9d30`).
 
 ## What's here
 
@@ -20,7 +21,7 @@ La Pampa ASGM corridor, subset of your `madre_de_dios_mining_aoi`).
 ## Tonight, step by step
 
 ```bash
-cd /Users/rubygrambauer/RA_Raji/AMW-mining-detector
+cd ~/Documents/RA_Raji/AMW-mining-detector
 source venv/bin/activate
 
 # 1. smoke test (~2-3 min): 2 tiles, one month

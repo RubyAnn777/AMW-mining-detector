@@ -1,10 +1,11 @@
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector
 
 # =============================================================================
 # FILE OVERVIEW — scripts/dissolve.py
 #
 # Standalone buffered-dissolve utility: merges adjacent/overlapping chip
 # detections into contiguous polygons. Same core idea as dissolve_patches()
-# in gee/postprocess.py (buffer +w, union, explode, buffer -w), but with
+# in core/postprocess.py (buffer +w, union, explode, buffer -w), but with
 # optional confidence thresholding FIRST and WITHOUT the mean-confidence
 # aggregation step (output polygons carry no attribute columns).
 #

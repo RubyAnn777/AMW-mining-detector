@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 """
 time_tiles.py — measure seconds-per-tile for the NEW model (CNN, embedding_strategy='none').
 

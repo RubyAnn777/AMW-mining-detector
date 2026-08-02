@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # Optimization Backlog — Earth Engine request architecture & scaling
 
 Status of scaling optimizations: done, planned, and considered-but-rejected.

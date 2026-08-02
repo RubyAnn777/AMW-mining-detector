@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 # run_overnight.sh — one command to launch the full overnight trial + analysis.
 #
 #   cd /Users/rubygrambauer/RA_Raji/AMW-mining-detector

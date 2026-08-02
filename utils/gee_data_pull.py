@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector
 """Tiles an AOI and exports data from GEE to GeoTiffs for supported collections.
 
 This is a utility function for uses outside the main ML workflow.
@@ -27,7 +28,7 @@ Where this script fits
     ("confidence") exceeds a threshold are saved as GeoJSON squares.
 
     THIS SCRIPT SITS OUTSIDE THAT ML WORKFLOW. It reuses the same tiling
-    and GEE download machinery (gee/gee.py and gee/tile_utils.py) but skips
+    and GEE download machinery (core/gee.py and core/tile_utils.py) but skips
     chipping, embedding, and classification entirely: it simply saves the
     raw composite imagery for each tile to disk as GeoTIFFs. Typical uses:
     debugging the imagery the model actually sees, inspecting cloud-mask
@@ -57,7 +58,7 @@ Outputs / side effects
     (reflectance x 10000); rasters are georeferenced in EPSG:4326.
 
 Environment requirements
-    This script inserts ../gee onto sys.path so it can import gee.py and
+    This script inserts ../core onto sys.path so it can import gee.py and
     tile_utils.py. NOTE: importing gee immediately calls ee.Initialize(),
     so Google Earth Engine authentication must already be set up and the
     EE_PROJECT environment variable should name your GEE cloud project.
@@ -74,7 +75,7 @@ from dataclasses import fields
 from pathlib import Path
 # re: regex validation of the YYYY-MM-DD date strings.
 import re
-# sys: needed to prepend the sibling gee/ package directory to sys.path.
+# sys: needed to prepend the sibling core/ package directory to sys.path.
 import sys
 
 # --- Third-party imports ---
@@ -84,11 +85,13 @@ import geopandas as gpd
 # tqdm: progress bar over AOI geometries during the download loop.
 from tqdm import tqdm
 
-# --- Local imports (from the sibling gee/ directory) ---
-# This file lives in utils/, but the GEE machinery lives in gee/ at the
-# repo root. Resolve <repo>/gee and put it at the front of sys.path so the
+# --- Local imports (from the sibling core/ directory) ---
+# This file lives in utils/, but the GEE machinery lives in core/ at the
+# repo root. Resolve <repo>/core and put it at the front of sys.path so the
 # two modules below can be imported as if they were top-level modules.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gee"))
+# FORK FIX 2026-08-02: upstream still inserts ../gee here — stale since their
+# gee/ -> core/ rename (bug present in upstream/main). Point at core/ instead.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 # gee: provides DataConfig (imagery source + cloud threshold settings) and
 # GEE_Data_Extractor (builds the lazy composite; downloads/saves tiles).
 # SIDE EFFECT: importing gee runs ee.Initialize() at module import time,

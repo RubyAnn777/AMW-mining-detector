@@ -1,3 +1,4 @@
+<!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # Decision Register — every parameter, choice, and knob in the pipeline
 
 Purpose: single reference for all decisions we can make — methodological,

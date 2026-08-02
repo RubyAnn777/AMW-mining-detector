@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector
 """
 run_trials.py — overnight orchestrator: 12 monthly + 4 quarterly chip panels
 for one AOI and one calendar year (default: La Pampa corridor, 2025).
