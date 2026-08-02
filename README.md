@@ -4,7 +4,7 @@ Trimmed fork of [earthrise-media/mining-detector](https://github.com/earthrise-m
 
 **Goal:** build a more granular time series of artisanal mining across the Amazon basin. Phase 1: validate the pipeline on a very small test region, then scale up.
 
-Everything not needed for inference/scoring (model training code, website data prep, old 2021–2024 models, published outputs, deprecated code) has been moved to `_archive/` (gitignored, structure mirrors the original repo — restore by moving files back). The upstream README is at `_archive/README_upstream.md`.
+Everything not needed for inference/scoring (model training code, website data prep, old 2021–2024 models, published outputs, deprecated code) has been moved to `_archive/` (gitignored, structure mirrors the original repo). The upstream README is at `_archive/README_upstream.md`.
 
 ## Layout
 

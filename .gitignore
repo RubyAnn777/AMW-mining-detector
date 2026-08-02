@@ -31,3 +31,8 @@ venv/
 checkpoints/
 checkpts-tmp/
 data/outputs/48px_v3.2-3.7ensemble/partial_years/
+cost_estimate.ipynb
+# timeseries pilot: keep panels/analysis in git-able form, ignore bulky caches & logs
+data/timeseries/cache/
+data/timeseries/runlog_*.log
+data/timeseries/nohup_overnight.log
