@@ -84,10 +84,79 @@ different failure modes, major rearchitecture (task monitoring, storage costs
 |---|---|---|
 | M1 | Coverage at 20 m instead of 10 m (−75 % coverage bytes) | REJECTED for now — pixel-exact masks required by the interpolation strategy (register H7); revisit if bandwidth ever binds |
 | M2 | Compressed GeoTIFF transport instead of raw NUMPY (−~40 % bytes) | Optional; bytes are not the binding constraint, requests are |
-| M3 | Cross-tile CNN batch inference | REJECTED — inference is not the bottleneck (network wait is) |
+| M3 | Cross-tile CNN batch inference | ~~REJECTED — inference is not the bottleneck (network wait is)~~ **REOPENED 2026-08-07 — the premise was wrong, see M3-revised below** |
 | M4 | Fetch per-scene imagery, composite locally (enables any operator) | REJECTED — 6–18× transfer volume; defeats D1 |
 | M5 | Reconstruct quarterly imagery from monthly composites | REJECTED — median nonlinearity; methodologically invalid |
 | M6 | Drop B10 (13→12 bands) | REJECTED — band set is a training contract (register B2) |
+
+## M3-revised — inference IS the bottleneck  `MEASURED 2026-08-07`
+
+M3 was rejected on the premise that network wait dominates. **That premise is false.**
+Measured over all 1,280 per-tile records in `data/timeseries/tiles/tile_stats_*.csv`
+(run 1, 16 periods × 80 tiles):
+
+| period type | fetch s/tile | infer s/tile | inference share of wall time |
+|---|---|---|---|
+| healthy monthly (m2025-01…10) | 2.7–2.9 | 5.9–7.3 | **68–72 %** |
+| all periods pooled | 5.29 | 21.01 | **80 %** |
+
+Note the asymmetry that makes this easy to misread: `fetch_s` is written *amortised*
+(`panel.py:224` divides the batch's wall time by the batch size) because fetches run
+concurrently, while `infer_s` is per tile and **serial** — inference holds
+`_tf_model_lock` (`core/inference_engine.py:619`), so it never overlaps. Per batch of 8
+tiles: ~22 s of concurrent fetching against ~50 s of serialised inference.
+
+**Second finding, from the same data — inference time tripled over one overnight run:**
+
+| periods (chronological) | mean infer s/tile |
+|---|---|
+| m2025-01 … m2025-10 (20:55–23:33) | ~6.2 |
+| m2025-12, q2025Q1…Q4 (05:43–10:14) | ~17.0 |
+
+Identical work — same 529 chips, same model, same tile count. A ~2.7× slowdown after
+~8 hours of continuous load is consistent with sustained thermal throttling, though not
+proof (the degraded-network period m2025-11 sits between the two groups, and the machine's
+state was not instrumented). It is direct evidence for the duty-cycle design in
+`RUN2_SETUP_AND_AUDIT.md` §3.5: **the "12 min per month" baseline only holds on a cool
+machine.**
+
+Implications, in order of value:
+
+1. **Any inference speedup is worth ~3× more than an equivalent network speedup**, which
+   inverts the assumed priority of O1/O2 versus inference work — those remain worth doing
+   for *quota* reasons (request count), just not for wall clock.
+2. **`core/tf_darwin.py:26` calls `tf.config.run_functions_eagerly(True)`** at import
+   (`inference_engine.py:40`), disabling TensorFlow graph optimisation for the whole
+   process. It exists to dodge a Metal/tf.data kernel crash on macOS. Nobody has tested
+   whether that crash still occurs on TF 2.14 + the current OS. If it does not, removing it
+   is a free speedup on the dominant cost. **Test before the basin run, not during.**
+3. Cross-tile batching (the original M3) is now plausibly worthwhile: `_model_infer` is
+   called once per tile with 529 chips; batching several tiles per `predict` call would
+   amortise Keras call overhead. Measure first — the 529-chip batch may already saturate.
+
+Do not confuse this with the thread caps. `AMW_THREADS=4` deliberately slows inference to
+protect the hardware; that is a chosen trade, and these numbers are what it trades against.
+
+## M7 — Stream panel rows to disk instead of accumulating  `PLANNED` (before basin scale)
+
+*Now:* `panel.py:155` accumulates every chip row for a period in a Python list and writes
+one parquet at the end (`panel.py:236`). At this AOI that is 42,320 rows ≈ tens of MB —
+irrelevant. At basin scale (~220k tiles) it is ~116 M rows per period and will not fit.
+
+Upstream has the same shape of problem in a different place: `bulk_predict`
+(`core/inference_engine.py:990-1003`) also accumulates a GeoDataFrame across all batches,
+and additionally rewrites the *entire* output GeoJSON after every batch — O(n²) write
+volume. It gets away with it because it only retains chips above threshold; the panel
+retains all of them, roughly 80× more rows.
+
+*Then:* write one parquet fragment per tile batch into `panels/<label>/part-*.parquet`, or
+use a `pyarrow.ParquetWriter` opened once per period and fed row groups. Either makes
+memory O(batch) instead of O(period), and has a second benefit that matters today:
+**a crash would stop losing the whole period's inference** (`RUN2_SETUP_AND_AUDIT.md` §5.2).
+
+- Care: `analysis.py:94` globs `panel_*.parquet`; a directory-per-period layout needs
+  `**/*.parquet` or a post-run concat step.
+- Not urgent at La Pampa scale. Required before Madre de Dios or basin.
 
 ## Order of work
 

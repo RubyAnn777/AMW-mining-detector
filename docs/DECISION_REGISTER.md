@@ -71,7 +71,7 @@ Cross-references: model details `pipeline_spatial_card.md`; code explanation
 |---|---|---|---|---|---|---|
 | E1 | Model | `--model_path` / `--model` | `48px_v4.10b-18d-20g-21a-22bc-ensemble.h5` (CNN ensemble, from scratch) | archived: SSL4EO-MLP v0.X (`cls_only`); `cls_patch` dense-embed track (160 m, needs SSL4EO `.pth`); future upstream releases | v4.10b = upstream's current best; embedding track shelved by upstream ("did not beat") | SET |
 | E2 | Embedding strategy | `--embedding_strategy` | `none` | `cls_only`, `cls_patch` | `none` = raw-pixel CNN, no extra weights, no FM | SET |
-| E3 | Prediction threshold | `--pred_threshold`; `--threshold` (trials); `T_MAIN` (analysis) | 0.4 (config-t0.4; engine default 0.5) | [0,1]; config files exist for t0.39/0.4/0.43/0.5 | Sensitivity/specificity trade; panel stores all probs so this only gates the convenience GeoJSON; analysis sweeps 0.30–0.60 (H5) | SET (provisional) |
+| E3 | Prediction threshold | `--pred_threshold`; `--threshold` (trials); `T_MAIN` (analysis) | 0.4 (config-t0.4; engine default 0.5) | [0,1]; for the CURRENT ensemble only t0.4 and t0.43 exist in `models/` (t0.39/t0.5 belong to the superseded `...-20cg-21a-ensemble` in `_archive/models/`) | Sensitivity/specificity trade; panel stores all probs so this only gates the convenience GeoJSON; analysis sweeps 0.30–0.60 (H5) | SET (provisional) |
 | E4 | Ensemble aggregation | `_probs_from_predictions` | mean over members | vote, max, trimmed mean — code edit | Mean = upstream convention | FIXED |
 | E5 | Concurrency (tiles in flight) | `max_concurrent_tiles`; `--max_concurrent_tiles` | 500 (upstream pipeline); 8-tile batches (our panel) | 1–∞, RAM-bound (~17 MB/tile) | Our batching bounds memory; upstream value only matters if using `bulk_predict` | SET |
 | E6 | Retries per tile | `tries`; `--tries` | 2 | ≥1 | With B9, three-layer resilience | DEFAULT |
@@ -93,8 +93,8 @@ Cross-references: model details `pipeline_spatial_card.md`; code explanation
 
 | # | Parameter | Where set | Current | Options / range | Consequence | Status |
 |---|---|---|---|---|---|---|
-| G1 | Main threshold | `postprocess.py --threshold` | 0.43 | [0,1] | Final keep threshold (matches config-t0.43) | DEFAULT |
-| G2 | Isolation threshold | `--low_area_conf_threshold` | 0.75 | [0,1] | Stricter bar for isolated detections → kills lone false positives, also kills new frontier pits (bias vs noise trade) | DEFAULT |
+| G1 | Main threshold | `postprocess.py --t-main` | 0.43 | [0,1] | Final keep threshold (matches config-t0.43) | DEFAULT |
+| G2 | Isolation threshold | `--t-iso` | 0.75 | [0,1] | Stricter bar for isolated detections → kills lone false positives, also kills new frontier pits (bias vs noise trade) | DEFAULT |
 | G3 | Neighbor rank | `--neighbor_rank` | 5 (5th NN) | ≥1 | Defines "isolated" | DEFAULT |
 | G4 | Isolation distance | (arg, default) | 3.0 km | >0 | with G3 | DEFAULT |
 | G5 | Dissolve | `--dissolve` flag | off unless passed | on/off | Merges overlapping chips → polygons, mean confidence; required before any area statistic | SET (on, in analysis) |

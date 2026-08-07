@@ -52,6 +52,7 @@ CACHE_ROOT="${AMW_CACHE_ROOT:-$REPO/data/timeseries/cache}"
 YEAR="${AMW_YEAR:-2025}"
 THREADS="${AMW_THREADS:-4}"
 WORKERS="${AMW_WORKERS:-4}"
+LIMIT_TILES="${AMW_LIMIT_TILES:-}"       # smoke test: only the first N tiles of the AOI
 COOLDOWN="${AMW_COOLDOWN:-600}"          # minimum idle seconds between periods
 COOLDOWN_PCT="${AMW_COOLDOWN_PCT:-75}"   # AND at least this % of the period's own runtime
 NICE_LEVEL="${AMW_NICE:-10}"
@@ -69,8 +70,13 @@ while [ $# -gt 0 ]; do
     *)         break ;;
   esac
 done
+# NOTE: expanded below as ${arr[@]+"${arr[@]}"}, not "${arr[@]}". macOS ships bash 3.2,
+# where expanding an EMPTY array under `set -u` raises "unbound variable". The `+`
+# form yields nothing when the array is unset/empty and is safe in bash 3.2 and 5.x.
 FORCE_ARG=()
 [ "$FORCE" = "1" ] && FORCE_ARG=(--force)
+LIMIT_ARG=()
+[ -n "$LIMIT_TILES" ] && LIMIT_ARG=(--limit_tiles "$LIMIT_TILES")
 
 if [ $# -eq 0 ]; then
   sed -n '3,40p' "$0"
@@ -190,7 +196,7 @@ cooldown_for() {
   echo "EE_PROJECT=$EE_PROJECT"
   echo "out_root=$OUT_ROOT"
   echo "cache=$CACHE_ROOT/$YEAR"
-  echo "year=$YEAR  threads=$THREADS  max_workers=$WORKERS"
+  echo "year=$YEAR  threads=$THREADS  max_workers=$WORKERS${LIMIT_TILES:+  limit_tiles=$LIMIT_TILES}"
   echo "cooldown=${COOLDOWN}s  priority=${PRIO[*]}"
   echo "periods=${PERIODS[*]}  (${#PERIODS[@]} total)"
   report_thermal
@@ -217,7 +223,7 @@ for i in "${!PERIODS[@]}"; do
         --year "$YEAR" \
         --months "$P" \
         --max_workers "$WORKERS" \
-        "${FORCE_ARG[@]}" >>"$LOG" 2>&1; then
+        ${FORCE_ARG[@]+"${FORCE_ARG[@]}"} ${LIMIT_ARG[@]+"${LIMIT_ARG[@]}"} >>"$LOG" 2>&1; then
     ELAPSED=$(( $(date +%s) - START ))
     echo "    OK in $(( ELAPSED / 60 )) min" | tee -a "$LOG"
   else

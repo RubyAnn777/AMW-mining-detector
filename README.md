@@ -5,7 +5,7 @@ Fork of [earthrise-media/mining-detector](https://github.com/earthrise-media/min
 
 **Project goal:** build a more granular (monthly/quarterly) time series of artisanal gold mining, piloted on the La Pampa corridor in Madre de Dios, Peru, then scale up.
 
-**Model in use:** `models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5` — upstream's CNN ensemble (six member CNNs: v4.10b, 18d, 20g, 21a, 22b, 22c; all member `.h5` files are also in `models/`). Operating-threshold configs ship alongside (`_config-t0.4.txt`, `_config-t0.43.txt`). It runs directly on Sentinel-2 chips (`embedding_strategy='none'`) — **no SSL4EO backbone download is required**. The earlier SSL4EO+MLP path (phase 1) is archived.
+**Model in use:** `models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5` — upstream's CNN ensemble (six member CNNs: v4.10b, 18d, 20g, 21a, 22b, 22c; the member `.h5` files are in `_archive/models/`, NOT in `models/`). Operating-threshold configs ship alongside (`_config-t0.4.txt`, `_config-t0.43.txt`). It runs directly on Sentinel-2 chips (`embedding_strategy='none'`) — **no SSL4EO backbone download is required**. The earlier SSL4EO+MLP path (phase 1) is archived.
 
 **Last upstream sync:** 2026-08-02 — merge `bac9d30` of upstream `bbbcb2d`. Sync procedure: `docs/GIT_PLAYBOOK.md`.
 
@@ -48,7 +48,10 @@ every upstream sync with `python scripts/provenance_report.py`.
 
 ## Setup
 
-1. `source venv/bin/activate` (deps pinned in `requirements-lock_2026-07-17.txt`)
+1. Build the environment — see `docs/RUNBOOK.md` §2. Short version: the venv lives at
+   `~/venvs/amw` (**not** in the repo), Python **3.11 only**, then
+   `python -m pip install -r requirements-lock_2026-07-17.txt`. Activate with
+   `source ~/venvs/amw/bin/activate`.
 2. GEE auth (Google Cloud project with Earth Engine enabled):
    ```bash
    gcloud auth login && gcloud auth application-default login

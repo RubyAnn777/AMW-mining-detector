@@ -559,7 +559,7 @@ Why this design? A frozen foundation model already "understands" satellite image
 | Ensemble members | 6 (v0.4, 0.6, 0.8, 0.9, 1.0, 1.3) | inside the .h5 |
 | Cloud threshold | cs_cdf ≥ 0.6 | `DataConfig.clear_threshold` |
 | Inference threshold | 0.85 (CLI), 0.5 (dataclass default) | `InferenceConfig.pred_threshold` |
-| Post-process threshold | 0.925 (+0.975 for polygons < 30 ha) | `postprocess.py` args |
+| Post-process threshold | **LEGACY** 0.925 (+0.975 for polygons < 30 ha). **Current:** `--t-main` 0.43 / `--t-iso` 0.75, conditional on *spatial isolation* (5th-nearest neighbour > 3 km), not on polygon size — no size-conditional rule exists in current code | `postprocess.py:244-265` |
 
 Scale check: the Amazon basin is ~8.5M km² ÷ 33.2 km²/tile ≈ 256k tiles × 529 chips ≈ **135M classifications per basin-wide run** — matching the README's "over 100 million assessments."
 
@@ -874,7 +874,7 @@ hello this is a test
 
 ## Part IX — `postprocess.py`: from chips to polygons
 
-Run as: `python postprocess.py <detections.geojson> [more...] --threshold 0.925 --dissolve --low_area_conf_threshold 0.975 --outpath out.geojson`. Steps, in order:
+**LEGACY COMMAND — DOES NOT RUN (verified 2026-08-07).** `--threshold`, `--low_area_conf_threshold` and `--ndvi_threshold` do not exist in the current `core/postprocess.py`; the flags are `--t-main` (0.43), `--t-iso` (0.75), `-k` (5) and `-D` (3.0 km), and the rule is spatial-isolation-conditional, not size-conditional. Current form: `python postprocess.py <detections.geojson> [more...] --dissolve --outpath out.geojson`. The description below documents the LEGACY 0.85/0.925 pipeline. Steps, in order:
 
 **1. Concatenate + threshold.** All input files are read, concatenated, reprojected to 4326; rows with `confidence < 0.925` are dropped. Two-threshold logic: inference runs cheap at 0.85 so you *keep* marginal detections on disk; analysis re-cuts at 0.925 (the operating point where the held-out precision hits ~1.00 at recall ~0.80). You can re-tune the analysis threshold without re-running inference.
 
