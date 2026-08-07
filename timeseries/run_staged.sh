@@ -58,10 +58,12 @@ NICE_LEVEL="${AMW_NICE:-10}"
 
 DRY_RUN=0
 FORCE=0
+ANALYSE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --force)   FORCE=1;   shift ;;   # rebuild panels even if the parquet exists
+    --analyse|--analyze) ANALYSE=1; shift ;;  # run analysis.py after the batch
     --)        shift; break ;;
     -*)        echo "unknown flag: $1" >&2; exit 2 ;;
     *)         break ;;
@@ -237,4 +239,21 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   exit 1
 fi
 echo "=== all ${#PERIODS[@]} periods done $(date) ===" | tee -a "$LOG"
+
+# --- optional: the statistical comparison over every panel in OUT_ROOT --------
+# Not run by default because it pools ALL panels present (analysis.py:94 globs with no
+# filter). Only meaningful once the periods you want compared are all built.
+if [ "$ANALYSE" = "1" ]; then
+  echo "--- analysis $(date '+%H:%M:%S') ---" | tee -a "$LOG"
+  if python "$REPO/timeseries/analysis.py" \
+        --panels_dir "$OUT_ROOT/panels" \
+        --tiles_dir  "$OUT_ROOT/tiles" \
+        --out_dir    "$OUT_ROOT/analysis" >>"$LOG" 2>&1; then
+    echo "    report: $OUT_ROOT/analysis/REPORT.md" | tee -a "$LOG"
+  else
+    echo "    ANALYSIS FAILED (see $LOG)" | tee -a "$LOG"
+    exit 1
+  fi
+fi
+
 echo "Log: $LOG"

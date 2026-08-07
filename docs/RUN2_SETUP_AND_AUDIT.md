@@ -15,358 +15,21 @@ log and is the operational setup manual. This document is the *evidence*; Part 0
 
 ---
 
-## 0. HOW TO RUN — the short version
+> **Operational instructions live in `docs/RUNBOOK.md` (moved 2026-08-07).** This document
+> is the *evidence*: what was measured, what was verified against source, and what remains
+> unverified. Read RUNBOOK to run the pipeline; read this to know why it is built this way.
+
+## Contents
+
+| § | topic |
+|---|---|
+| 1.8–1.9 | why `.env` is invisible to Python; how GEE auth actually resolves |
+| 2 | scale of a 2-year run; panel schema v2 and its measured cost |
+| 3 | laptop protection: what was missing, what the load actually is, what was implemented |
+| 4 | **threshold provenance deep-dive** — where every cutoff came from |
+| 5 | parallelism, caching, checkpointing, failure recovery; measured runtimes |
+| 6 | documentation contradicted by code |
 
-Three commands. Nothing to export, nothing to configure.
-
-```bash
-source ~/venvs/amw/bin/activate
-cd ~/RA_Raji/AMW-mining-detector
-bash timeseries/run_staged.sh 2025-01 2025-02 2025-03 q2025Q1
-```
-
-That's it. `EE_PROJECT` is read from `.env` by the script; every path defaults correctly.
-
-**Variants**
-
-```bash
-bash timeseries/run_staged.sh --dry-run 2025-01        # print the config, run nothing
-bash timeseries/run_staged.sh --force 2025-01          # rebuild a panel that already exists
-bash timeseries/run_staged.sh 2025-04 2025-05 2025-06 q2025Q2   # next batch, any time
-```
-
-Period labels: months as `YYYY-MM`, quarters as `qYYYYQN`. Any mix, any order, any number.
-
-**Where everything lives** (all inside the repo since the 2026-08-07 relocation):
-
-| what | path | in git? |
-|---|---|---|
-| panels, tile stats, detections, logs | `data/timeseries_run2/` | panels yes, logs no |
-| tile cache (imagery + coverage GeoTIFFs) | `data/timeseries/cache/<year>/` | no — gitignored |
-| run 1's completed 2025 outputs | `data/timeseries/` | yes |
-| the venv | `~/venvs/amw` | n/a — outside the repo on purpose (§1.6) |
-
-The venv is the one thing kept outside. Not because it must be any more, but because a venv
-hardcodes absolute paths into `bin/activate` and every console script, so keeping it out
-makes the setup immune to a future repo move — the failure that cost a full day (§1.1).
-
-**Resume behaviour.** Re-running the same command is always safe and always cheap: periods
-whose parquet exists are skipped (`run_trials.py:123-126`), and cached tiles are reused.
-Ctrl-C during a cooldown loses nothing. Ctrl-C mid-period loses only that period's parquet
-— the tiles it fetched stay cached, so the retry skips straight to inference.
-
-**Protection while it runs** — all automatic, see §3.5: 4 CPU threads, 4 workers,
-`taskpolicy -b` background priority, and a rest of 75 % of each period's own runtime
-(minimum 10 min) between periods.
-
-**Tuning**, if you ever want it:
-
-```bash
-AMW_THREADS=2 AMW_WORKERS=2 bash timeseries/run_staged.sh 2025-01   # gentler
-AMW_COOLDOWN_PCT=100 bash timeseries/run_staged.sh 2025-01          # 1:1 work:rest
-AMW_THREADS=0 bash timeseries/run_staged.sh 2025-01                 # uncapped, stock speed
-```
-
-**Analysis, after a batch:**
-
-```bash
-python timeseries/analysis.py \
-  --panels_dir data/timeseries_run2/panels \
-  --tiles_dir  data/timeseries_run2/tiles \
-  --out_dir    data/timeseries_run2/analysis
-```
-
-Runs on the laptop in about a minute — run 1 analysed 677,120 rows that fast (§2.5). No
-cloud compute is needed for the statistics at any point.
-
----
-
-## 1. Environment — the full incident log
-
-**Six independent faults stacked on top of each other.** Each masked the next, which is
-why the errors kept changing shape across the day. Listed in the order diagnosed, with the
-evidence for each.
-
-| # | Fault | Symptom seen | Status |
-|---|---|---|---|
-| A | venv built at the old repo path | `No module named 'ee'` / `'geopandas'` with `(venv)` showing | **solved** — rebuild |
-| B | global `~/.venv` on Python 3.14 active | `Using Python 3.14.0 environment at: /Users/…/.venv`; `pandas`/`numpy` resolution failure | **solved** — `unset VIRTUAL_ENV`; shell config still to check |
-| C | `uv init` scaffolded a conflicting project | `incompatible with the project's Python requirement: >=3.13` | **solved** — artifacts deleted |
-| D | iCloud folder cannot host a venv | `Errno 1 Operation not permitted`; `failed to make path absolute` | **eliminated** — repo relocated out of iCloud 2026-08-07 |
-| E | `rye` shims ahead of the venv on `PATH` | `which python` → `~/.rye/shims/python` | **open** — verify with `which python`, or uninstall rye |
-| F | `ee.Authenticate()` blocked by Google | browser returns *Access blocked*; drive-scope warning | **solved** — `auth_mode='localhost'` + reduced scopes |
-
-**The single lesson, if you read nothing else:** `(venv)` in the prompt is not evidence.
-Faults A, B and E all present identically — packages that are demonstrably installed report
-as missing — and all three are diagnosed in one command: `which python && python -VV`.
-
-### 1.1 Fault A — the venv was built at the old repo path (SOLVED)
-
-At the time of this fault the repo had been moved from `~/RA_Raji/AMW-mining-detector`
-into `~/Documents/RA_Raji/AMW-mining-detector` (it was moved back on 2026-08-07 — §1.4).
-The venv was created before that move and hardcoded the old absolute path:
-
-```
-venv/bin/activate:81   VIRTUAL_ENV='/Users/rubygrambauer/RA_Raji/AMW-mining-detector/venv'
-venv/bin/earthengine   #!/Users/rubygrambauer/RA_Raji/AMW-mining-detector/venv/bin/python
-venv/bin/pip           #!/Users/rubygrambauer/RA_Raji/AMW-mining-detector/venv/bin/python
-```
-
-`source venv/bin/activate` therefore prepended a **non-existent** directory to `PATH`,
-printed `(venv)` in the prompt, and left `python` resolving to whatever was next on
-`PATH`. All 58 console scripts in `venv/bin/` had the same dead shebang.
-
-**This is the original cause of `ModuleNotFoundError: No module named 'ee'`** — the
-packages were present in `venv/lib/python3.11/site-packages/` the whole time; the
-interpreter running was not that venv's.
-
-**Symptoms it produced:** `No module named 'ee'`, `No module named 'geopandas'`,
-`zsh: command not found: earthengine`.
-
-**Lesson:** uv/virtualenv venvs are **not relocatable**. Moving or renaming a repo
-invalidates its venv. Rebuild, never move.
-
-### 1.2 Fault B — a global `~/.venv` on Python 3.14 was active (OPEN)
-
-```
-$ uv pip install -r requirements-lock_2026-07-17.txt
-Using Python 3.14.0 environment at: /Users/rubygrambauer/.venv
-```
-
-A venv at `~/.venv` (Python 3.14.0) was active and shadowing everything. This is what
-`(venv)` in the prompt actually referred to — including back in `core/` when the first
-`import ee` failed.
-
-**Symptom it produced:** the dependency resolution failure
-
-```
-Because pandas==3.0.3 depends on numpy>=2.3.3 and you require numpy==1.26.4,
-we can conclude that your requirements and pandas==3.0.3 are incompatible.
-```
-
-This is not a bad lock file. uv resolved against **Python 3.14**, where `pandas 3.0.3`
-declares a numpy floor of `>=2.3.3`. On Python 3.11 the floor is lower — the lock file is
-itself the evidence, having been frozen from a working 3.11 environment on 2026-07-17.
-
-**Decisive constraint regardless of numpy: `tensorflow==2.14.0` publishes no wheels above
-cp311.** Python 3.13 and 3.14 are both impossible for this project. **Python 3.11 is
-mandatory.**
-
-**Still to do:** find out why `~/.venv` auto-activates.
-`grep -n "venv\|VIRTUAL_ENV" ~/.zshrc ~/.zprofile ~/.zshenv`. Until that line is removed,
-every new terminal re-shadows the repo venv.
-
-### 1.3 Fault C — `uv init` scaffolded a conflicting project (SOLVED)
-
-`uv sync` and `uv add` were the wrong commands: this repo has **no `pyproject.toml`** and
-manages dependencies via `requirements.txt` (loose) + `requirements-lock_2026-07-17.txt`
-(pinned). `uv sync` requires a `pyproject.toml`; `uv add` failed only because no package
-argument was given.
-
-Running `uv init` to create one made things worse. At 15:52 it wrote:
-
-| file | content | effect |
-|---|---|---|
-| `pyproject.toml` | `requires-python = ">=3.13"`, `dependencies = []` | forces 3.13; a future `uv sync` would install nothing and could uninstall what is there |
-| `.python-version` | `3.13` | makes bare `uv venv` default to 3.13 |
-| `uv.lock` | empty virtual project | — |
-| `main.py` | `print("Hello from amw-mining-detector!")` | junk at repo root |
-| `.venv/` | Python **3.13.5**, `prompt = amw-mining-detector` | a *second* venv in the repo, alongside `venv/` |
-
-**Symptom it produced:**
-
-```
-warning: The requested interpreter resolved to Python 3.11.15, which is incompatible
-with the project's Python requirement: `>=3.13` (from `project.requires-python`)
-```
-
-All five artifacts were untracked (`git status`: `??`) and must be deleted:
-
-```bash
-rm -f pyproject.toml .python-version uv.lock main.py
-rm -rf .venv
-```
-
-Note: a *correct* `pyproject.toml` (`requires-python = ">=3.11,<3.12"` + the full pinned
-dependency set) would be a real reproducibility improvement for the paper. That is a
-deliberate migration to do **after** the pilot runs — not the empty `uv init` stub.
-
-### 1.4 Fault D — the repo directory cannot host a venv (SOLVED — root cause)
-
-```
-$ uv pip install --python venv/bin/python -r requirements-lock_2026-07-17.txt
-error: Failed to inspect Python interpreter from provided path at `venv/bin/python`
-  Caused by: Querying Python at `venv/bin/python` failed with exit status 1
-[stderr]
-Exception ignored error evaluating path:
-  File "<frozen getpath>", line 268, in <module>
-OSError: failed to make path absolute
-Fatal Python error: error evaluating path
-Python runtime state: core initialized
-```
-
-**What is verifiable:** the venv itself is structurally correct.
-
-```
-venv/pyvenv.cfg          version_info = 3.11.15, uv = 0.11.21
-venv/bin/activate:81     VIRTUAL_ENV='/Users/rubygrambauer/RA_Raji/AMW-mining-detector/venv'  ← correct path now
-venv/bin/python       -> /Users/rubygrambauer/.local/share/uv/python/cpython-3.11-macos-aarch64-none/bin/python3.11
-venv/lib/python3.11/site-packages/   _virtualenv.pth only  ← EMPTY, install never ran
-```
-
-The interpreter **starts** ("Python runtime state: core initialized") and then fails while
-computing its own paths, so the symlink target exists and the binary is executable.
-`OSError: failed to make path absolute` originates in CPython's path bootstrap, which
-makes relative paths absolute using `getcwd()`.
-
-**Root cause, established by three tests run 2026-08-04:**
-
-```bash
-$ "$UVPY" -c "import os; print(os.getcwd())"
-getcwd OK: /Users/rubygrambauer/RA_Raji/AMW-mining-detector   # ← getcwd is FINE
-
-$ "$UVPY" -m venv /tmp/venvtest
-TMP VENV OK                                                            # ← interpreter is FINE
-
-$ "$UVPY" -m venv venv          # inside the repo
-Error: [Errno 1] Operation not permitted                               # ← the DIRECTORY refuses
-```
-
-`~/Documents` is **iCloud-managed** (Desktop & Documents Folders sync). The iCloud file
-provider does not support the operations `venv` creation requires — symlinking and setting
-file flags on the copied interpreter. `EPERM` is returned by the file provider, not by
-Unix permissions, so `chmod`/`sudo` cannot fix it.
-
-The earlier `OSError: failed to make path absolute` was the same wall from the other side:
-uv had created a venv whose `bin/python` symlink the file provider would not resolve for a
-spawned process, so CPython's path bootstrap died.
-
-**The decisive asymmetry: `getcwd()` works.** Code can be *executed* from inside the iCloud
-folder without problems — only the venv cannot *live* there.
-
-Historical confirmation: the original venv worked when the repo was at
-`~/RA_Raji/AMW-mining-detector`, outside `~/Documents`. Every venv fault in this log dates
-from the move into iCloud.
-
-> ### ✅ ELIMINATED 2026-08-07 — repo relocated out of iCloud
->
-> The repository was moved back to **`~/RA_Raji/AMW-mining-detector`**. Verified after the
-> move: `git fsck` clean, `git log` intact at `c3f432a`, 7.9 GB present, and
-> `run_staged.sh --dry-run` created `data/timeseries_run2/` **successfully** — the `mkdir`
-> that returned `EPERM` under iCloud now works.
->
-> The move was low-risk *specifically because* the venv, tile cache and run outputs had
-> already been relocated outside the repo. Nothing inside the folder hardcoded an absolute
-> path; both shell scripts derive the repo root from `$0`.
->
-> **What this changes:**
-> - Run outputs may now live inside the repo again (`data/timeseries_run2/`) — the default.
-> - The tile cache *may* move back, but §1.6c's advice still stands for a different reason:
->   5,120 files of 4.8 GB/year is noise in `git status` and bulk in any backup.
-> - The venv at `~/venvs/amw` **can** move back into the repo, but there is no reason to.
->   Keeping it out also immunises the setup against a future repo move (§1.1).
->
-> Rows in `CODE_WALKTHROUGH.md` §0.9 tagged `[2026-08-04]` for iCloud `EPERM` are now
-> historical. They are kept because the failure mode is non-obvious and recurs the moment
-> anything lands in `~/Documents` again.
-
-### 1.5 Fault E — `rye` shims sit ahead of everything on PATH (OPEN)
-
-Revealed while diagnosing Fault A:
-
-```
-$ which python
-/Users/rubygrambauer/.rye/shims/python
-```
-
-`rye` is installed and `~/.rye/shims` is on `PATH` **ahead of** the venv. This, not just
-`~/.venv`, is why bare `python` kept resolving to the wrong interpreter — the rye shim
-intercepts `python` and resolves it to whatever rye considers the active environment
-(here, `~/.venv` on 3.14).
-
-A venv with a **valid** path still wins, because `activate` prepends its `bin/` ahead of
-the shims — confirmed: after `source ~/venvs/amw/bin/activate`, `which python` correctly
-gives `/Users/rubygrambauer/venvs/amw/bin/python`. But a venv with a **dead** path
-(Fault A) silently fell through to the shim. That combination is what made the original
-error so opaque.
-
-**Still to do:** decide whether rye is wanted at all. If not,
-`rye self uninstall` and remove the `~/.rye/shims` line from `~/.zshrc` / `~/.zprofile`.
-If it is wanted, always verify with `which python` — never trust `(venv)` in the prompt.
-
-### 1.6 The working setup — venv outside iCloud
-
-**Do you need uv? No.** uv is only a package installer here. This route uses it once to
-locate a 3.11 interpreter, then drops it.
-
-```bash
-# clean up the failed attempts (untracked scaffolding + broken venvs)
-cd ~/RA_Raji/AMW-mining-detector
-deactivate 2>/dev/null; unset VIRTUAL_ENV
-rm -f pyproject.toml .python-version uv.lock main.py
-rm -rf .venv venv
-
-# create the venv OUTSIDE iCloud
-UVPY=$(uv python find 3.11)
-"$UVPY" -VV                                   # must print 3.11.x
-mkdir -p ~/venvs
-"$UVPY" -m venv ~/venvs/amw
-
-source ~/venvs/amw/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r ~/RA_Raji/AMW-mining-detector/requirements-lock_2026-07-17.txt
-```
-
-`~/venvs` is a plain local path: no file provider, no TCC scope, no sync. Verified working
-2026-08-04 (`python -VV` → 3.11.15, `which python` → `/Users/rubygrambauer/venvs/amw/bin/python`).
-
-### 1.6b Consequences of the venv living outside the repo
-
-Two places assume `venv/` sits in the repo root and will now fail:
-
-1. **`timeseries/run_overnight.sh:19`** — `source venv/bin/activate`. Change to
-   `source ~/venvs/amw/bin/activate`, or export a variable and use it.
-2. **`README.md:51`** — "`source venv/bin/activate`". Stale; update to the new path.
-
-Activate manually from now on:
-
-```bash
-source ~/venvs/amw/bin/activate
-cd ~/RA_Raji/AMW-mining-detector
-```
-
-### 1.6c iCloud and the tile cache — a real hazard for the long run
-
-The cache is **4.8 GB per year** (§2.5, measured). Writing that into an iCloud-synced
-folder means continuous upload churn during the run, and — worse — iCloud may **evict**
-cold files to placeholders (`*.icloud`), at which point `rasterio.open()` on a cached tile
-fails or blocks on a network fetch. `data/timeseries/cache/` is gitignored but **not**
-excluded from iCloud.
-
-`run_trials.py:76` exposes `--cache_dir`. Point it outside iCloud:
-
-```bash
-mkdir -p ~/amw_cache
-python timeseries/run_trials.py \
-  --out_root data/timeseries_run2 \
-  --cache_dir ~/amw_cache/2025 \
-  --year 2025 …
-```
-
-Panels and analysis outputs (~27 MB/year) can stay in the repo — small, and you want them
-synced and backed up.
-
-### 1.7 Verification gate — do not skip
-
-```bash
-python -VV                         # must be 3.11.x
-which python                       # must be /Users/rubygrambauer/venvs/amw/bin/python
-python -c "import ee, geopandas, tensorflow, numpy, pandas; print(numpy.__version__, pandas.__version__)"
-```
-
-Expected: `3.11.15`, the `~/venvs/amw` path, and `1.26.4 3.0.3`. If `which python` shows
-`~/.rye/shims/python`, Fault E (§1.5) has re-asserted itself — re-activate before doing
-anything else.
 
 ### 1.8 `.env` is not read by any Python code — silent wrong-project failure
 
@@ -383,17 +46,14 @@ EE_PROJECT = os.environ.get("EE_PROJECT", "earthindex")
 ```
 
 **No Python module in this repo calls `load_dotenv`; `python-dotenv` is not installed.**
-Only `timeseries/run_overnight.sh:22-27` parses `.env`, with a `sed` workaround because
-the file is not valid shell (spaces around `=`, quotes).
+Only `timeseries/run_staged.sh` parses `.env`, with a `sed` workaround because the file is
+not valid shell (spaces around `=`, quotes). So `run_staged.sh` handles it for you — but a
+bare `python timeseries/run_trials.py` does not.
 
 Consequence: running `python timeseries/run_trials.py` without exporting `EE_PROJECT`
 initialises Earth Engine against **`earthindex`** — upstream's project, not yours. The
-resulting permission error never mentions your project. This is the most likely source of
-confusing GEE errors after a project switch.
+resulting permission error never mentions your project.
 
-The previous run used project `arboreal-pen-334513` (visible in the retry URLs in
-`data/timeseries/runlog_20260728_223615.log`). The switch to `deforestation-and-mining`
-is real and is only picked up via `.env` → `run_overnight.sh`, or via explicit `export`.
 
 ### 1.9 Auth mechanism (verified against the installed library)
 
@@ -408,10 +68,9 @@ unless `GOOGLE_APPLICATION_CREDENTIALS` points at a service-account JSON
 Both paths in `README.md:53-56` are valid. You need **one**.
 
 `earthengine` is a console script shipped by `earthengine-api`, so it only exists once the
-venv is genuinely active — `zsh: command not found: earthengine` is a symptom of Fault A,
-not a missing package. `python -c "import ee; ee.Authenticate()"` is the equivalent.
+venv is genuinely active.
 
-#### Fault F — bare `ee.Authenticate()` is blocked by Google (SOLVED)
+#### Fault F — bare `ee.Authenticate()` is blocked by Google
 
 ```
 Fetching credentials using gcloud
@@ -449,102 +108,8 @@ PY
 `localhost` mode defaults to port 8085 (`oauth.py:607`); use `auth_mode='localhost:0'` to
 auto-select a free port if 8085 is occupied.
 
-**Dropping the `drive` and `devstorage` scopes is safe — verified, not assumed:**
+**Dropping the `drive` and `devstorage` scopes is safe as these are not touched anywhere**
 
-- `core/gee.py:55` requests exactly `["https://www.googleapis.com/auth/earthengine"]` on
-  the service-account path. All data flows through `ee.data.computePixels`. Nothing in
-  this pipeline touches Drive or Cloud Storage.
-- Reduced scopes do **not** break `ee.Initialize()`. `data.py:237` calls
-  `oauth.is_valid_credentials(credentials)`, whose signature (`oauth.py:154`) takes **no**
-  `scopes` argument and only attempts a token refresh. The scope check lives solely in
-  `_valid_credentials_exist()` (`oauth.py:139-150`), which is used only by `authenticate()`
-  to decide whether to skip the flow.
-
-Fallback if `localhost` mode cannot reach a browser on the same host:
-`auth_mode='notebook'`. Note `oauth.py:510` — **notebook credentials expire in 7 days**,
-so it is unsuitable for an unattended overnight run.
-
-### 1.10 Full working sequence, once §1.7 passes
-
-```bash
-source ~/venvs/amw/bin/activate                 # venv lives OUTSIDE iCloud (§1.4)
-cd ~/RA_Raji/AMW-mining-detector
-python -c "import ee; ee.Authenticate()"        # once per machine
-export EE_PROJECT=deforestation-and-mining      # .env is NOT read by Python
-
-# end-to-end auth + data check (one 552px tile, one month)
-python - <<'PY'
-import sys
-sys.path.insert(0, "core")
-import gee, tile_utils, geopandas as gpd
-cfg = gee.DataConfig()
-ex  = gee.GEE_Data_Extractor("2025-07-01", "2025-08-01", cfg)
-region = gpd.read_file("data/boundaries/la_pampa_corridor.geojson").union_all()
-tiles  = tile_utils.create_tiles(region, cfg.tilesize, cfg.pad)
-print("tiles in AOI:", len(tiles))
-px = ex.get_tile_data(tiles[0])
-print("tile shape:", px.shape, "dtype:", px.dtype, "nonzero frac:", float((px != 0).mean()))
-PY
-```
-
-Expected: `tiles in AOI: 80`, `tile shape: (576, 576, 13)`.
-`576 = 552 + 2×12` (`gee.py:68-69`, `gee.py:190`).
-
-### 1.11 Standing rules extracted from this incident
-
-0. **The repo lives at `~/RA_Raji/AMW-mining-detector`. Keep it out of `~/Documents`.**
-   That path is iCloud-managed; its file provider returns `EPERM` for venv creation and
-   for some `mkdir` calls, and it evicts cold files to `.icloud` placeholders that
-   `rasterio` cannot open.
-1. **The venv lives at `~/venvs/amw`, never inside the repo.** Now a choice rather than a
-   constraint, and still the right one: it survives any future repo move.
-2. **Never move or rename the repo directory** without rebuilding anything inside it.
-   Venvs hardcode absolute paths in `bin/activate` and in every console-script shebang;
-   moving the repo silently breaks them while still printing `(venv)`. The 2026-08-07
-   relocation was safe *only* because nothing path-dependent remained inside the folder.
-3. **`(venv)` in the prompt proves nothing.** `~/.rye/shims` sits ahead of the venv on
-   `PATH` (§1.5). Always verify with `which python && python -VV`.
-4. **Do not run `uv init` / `uv sync` / `uv add` in this repo.** It is a
-   `requirements.txt` project, not a uv project. `uv init` creates a `pyproject.toml`
-   pinned to `>=3.13` plus a second venv at `.venv/`, and breaks everything.
-5. **Python 3.11 is mandatory** (`tensorflow==2.14.0` publishes no wheels above cp311).
-   Any resolution error mentioning `numpy>=2.3.3` means the wrong interpreter was targeted.
-6. **Always `export EE_PROJECT`.** `.env` is invisible to Python (§1.8).
-7. **Keep the tile cache out of iCloud** — `--cache_dir ~/amw_cache/<year>` (§1.6c).
-   4.8 GB/year of `.tif`s in a synced folder risks eviction mid-run.
-8. **Add to `.gitignore`:** `.venv/`, `pyproject.toml`, `uv.lock`, `.python-version`,
-   `main.py` — or at minimum do not commit them.
-
----
-
-## 2. The tiny 2-year test — what the CLI actually supports
-
-### 2.1 `run_trials.py` takes ONE year
-
-`timeseries/run_trials.py:74`: `--year`, `type=int`, `default=2025`. There is no
-multi-year flag. A 2-year run is **two invocations**. The cache directory defaults to
-`<out_root>/cache/<year>` (`run_trials.py:92`), so the two years do not collide.
-
-### 2.2 Verified flags (README claims match code here)
-
-| flag | default | line |
-|---|---|---|
-| `--region` | `data/boundaries/la_pampa_corridor.geojson` | `run_trials.py:70` |
-| `--model` | `models/48px_v4.10b-…-ensemble.h5` | `:72` |
-| `--year` | `2025` | `:74` |
-| `--out_root` | `data/timeseries` | `:75` |
-| `--cache_dir` | `<out_root>/cache/<year>` | `:76`, `:92` |
-| `--threshold` | `0.4` — **only** gates the convenience GeoJSON | `:78`, `panel.py:245` |
-| `--max_workers` | `8` | `:81` |
-| `--limit_tiles` | `None` | `:82` |
-| `--months` | `None` (comma list `2025-07,2025-08`) | `:84` |
-| `--no-monthly` / `--no-quarterly` | off | `:86-87` |
-| `--force` | off | `:88` |
-
-There is **no** `--limit_area`, no AOI-subsetting flag, and no `--quarters` flag. To
-shrink the area you either pass a smaller `--region` GeoJSON or use `--limit_tiles N`
-(which takes the *first* N tiles in DLTile iteration order — a contiguous-ish strip, not
-a random sample; `panel.py:130`).
 
 ### 2.3 Blocking issue for a 2-year run: `analysis.py` pools everything
 
@@ -748,7 +313,7 @@ Two independent load sources, both uncapped:
 | 1 | Cap TF threads | `export TF_NUM_INTRAOP_THREADS=4 OMP_NUM_THREADS=4`, or `tf.config.threading.set_intra_op_parallelism_threads(4)` | Directly caps the dominant heat source. On an 8-core machine roughly halves package power at ~1.6× wall-clock. |
 | 2 | Lower `--max_workers` | `--max_workers 4` | Halves concurrent EE requests *and* per-batch tile count (`panel.py:161` reuses `max_workers` as the batch size — one knob, two effects). |
 | 3 | Deprioritise the process | `nice -n 10 python timeseries/run_trials.py …` | Lets macOS schedule around it; on Apple Silicon, low-priority work is preferentially placed on efficiency cores. Large thermal effect, no code change. |
-| 4 | Drop `caffeinate -m` | `run_overnight.sh:45` → `caffeinate -i -w` | Allows disk sleep. Minor. |
+| 4 | Drop `caffeinate` entirely | ~~`run_overnight.sh:45`~~ — **done by deleting the script (2026-08-07)**. `run_staged.sh` never calls it. | The pipeline is resume-safe, so sleeping mid-run costs nothing; holding the machine awake at load for 10 h costs hardware. |
 | 5 | Inter-batch pause | `time.sleep(N)` after `panel.py:228` | Duty-cycles the CPU. Crude but effective; costs wall-clock proportionally. |
 | 6 | Thermal watchdog | external loop on `sudo powermetrics --samplers smc`; `kill -STOP`/`-CONT` around a limit | The only actual closed-loop protection. Requires sudo. Not written. |
 
@@ -1140,10 +705,13 @@ Listed because the docs have not been maintained. **Follow the code, not these.*
    it was trained on. Whether this matters is untested.
 10. **`timeseries/README.md:18` says "~70 tiles"; the actual count is 80**
     (`runlog_20260728_223615.log:7`, and 2,560 cache files = 16 × 80 × 2).
-11. **`timeseries/README.md:24` and `run_overnight.sh:5` give the wrong repo path**
+11. ~~**`timeseries/README.md:24` and `run_overnight.sh:5` give the wrong repo path**~~
+    **RESOLVED 2026-08-07** — `timeseries/README.md` rewritten, `run_overnight.sh` deleted.
+    Original finding:
     (`~/RA_Raji/…` instead of `~/Documents/RA_Raji/…`). This is the same stale path that
     broke the venv (§1.1). Run-1 logs confirm the old location.
-12. **`run_overnight.sh:36` hardcodes `--year 2025`** with no override. For run 2 you must
+12. ~~**`run_overnight.sh:36` hardcodes `--year 2025`**~~ **RESOLVED 2026-08-07** — script
+    deleted; `run_staged.sh` takes `AMW_YEAR`. Original finding: with no override, for run 2 you must
     call `run_trials.py` directly or edit the script.
 13. **`README.md:51` says "`source venv/bin/activate` (deps pinned in
     `requirements-lock_2026-07-17.txt`)"** but gives no install command, so a fresh machine

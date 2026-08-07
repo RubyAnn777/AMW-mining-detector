@@ -11,7 +11,7 @@ even a partially-finished period restarts nearly warm.
 
 Typical use (from repo root, venv active, Earth Engine authenticated):
 
-    export EE_PROJECT=<your-gcp-project>          # or set in .env, see run_overnight.sh
+    export EE_PROJECT=<your-gcp-project>          # or set in .env, see run_staged.sh
     python timeseries/run_trials.py               # full 2025 trial, both cadences
 
 Smoke test before bed (2 tiles, 1 month, ~2 minutes):

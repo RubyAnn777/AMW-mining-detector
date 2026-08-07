@@ -617,7 +617,18 @@ def section_nclear(df: pd.DataFrame, rep: Report, tables: Path):
 # ----------------------------------------------------------------------------#
 # implications + limitations (written text, filled by the numbers above)      #
 # ----------------------------------------------------------------------------#
-def section_implications(rep: Report):
+def section_implications(rep: Report, df: pd.DataFrame | None = None):
+    # The limitation text below quotes the number of monthly periods. Derive it from the
+    # data rather than hardcoding 12, so a multi-year run does not silently ship a false
+    # claim in its own limitations section.
+    n_months = 12
+    n_years = 1
+    if df is not None and "period" in df:
+        months = df.loc[df.cadence == "monthly", "period"].unique()
+        n_months = len(months)
+        n_years = len({m[1:5] for m in months if MONTH_RE.match(m)}) or 1
+    scope = ("one year" if n_years == 1
+             else f"{n_years} years")
     rep.add(
         "## I. Implications for the econometric interpolation strategy", "",
         "1. **Never treat a low score under low `clear_frac` as a zero.** The "
@@ -643,16 +654,16 @@ def section_implications(rep: Report):
         "share of area carried by the balanced subsample alongside.",
         "",
         "## J. Limitations (to carry into any write-up)", "",
-        "- One AOI (La Pampa corridor), one year, one model: no external "
+        f"- One AOI (La Pampa corridor), {scope}, one model: no external "
         "validity claimed. The AOI was chosen for dense mining signal, i.e. "
         "non-randomly.",
         "- CNN scores are the measurement instrument, not ground truth; all "
         "consistency results are internal. Validation against published AMW "
         "quarterly outputs and/or manual photo-interpretation is the natural "
         "next step.",
-        "- n = 12 months: all time-series statistics are descriptive; no "
-        "significance claims should survive into the paper without more "
-        "periods or more AOIs.",
+        f"- n = {n_months} months ({max(n_months - 1, 0)} first differences): all "
+        "time-series statistics are descriptive; no significance claims should "
+        "survive into the paper without more periods or more AOIs.",
         "- Quarterly composites differ from monthly ones non-linearly (median "
         "over ~3× scenes); 'quarterly as truth' is an assumption of "
         "convenience in sections F/H, not a fact.",
@@ -706,7 +717,7 @@ def main() -> int:
         ("F", lambda: section_noise(df, rep, tables)),
         ("G", lambda: section_threshold(df, rep, figs, tables)),
         ("H", lambda: section_nclear(df, rep, tables)),
-        ("I/J", lambda: section_implications(rep)),
+        ("I/J", lambda: section_implications(rep, df)),
     ]
     for name, fn in sections:
         try:

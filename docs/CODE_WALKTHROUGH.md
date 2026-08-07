@@ -201,7 +201,7 @@ echo 'export EE_PROJECT=deforestation-and-mining' >> ~/.zshrc       # every futu
 > **`.env` is invisible to Python — this is a silent failure, not a loud one.**
 > `core/gee.py:20` reads `os.environ.get("EE_PROJECT", "earthindex")`. No module in this
 > repo calls `load_dotenv`, and `python-dotenv` is not installed. Only
-> `timeseries/run_overnight.sh:22-27` parses `.env`, via a `sed` workaround (the file is
+> `timeseries/run_staged.sh` parses `.env`, via a `sed` workaround (the file is
 > not valid shell — it has spaces around `=`). **Without the `export`, Earth Engine is
 > initialised against `earthindex`, upstream's project**, and the resulting permission
 > error never names your project.
@@ -314,13 +314,14 @@ jupyter lab                                                                # inf
 > **Thermal note.** There is no CPU cap, memory cap, or thermal safeguard anywhere in this
 > codebase (audited 2026-08-04; `RUN2_SETUP_AND_AUDIT.md` §3). For long runs prepend
 > `OMP_NUM_THREADS=4 TF_NUM_INTRAOP_THREADS=4 nice -n 10` and pass `--max_workers 4`.
-> `run_overnight.sh` calls `caffeinate -im`, which *prevents* sleep — it is a sustained-load
+> The deleted `run_overnight.sh` called `caffeinate -im`, which *prevents* sleep — a sustained-load
 > enabler, not a protection.
 
-> **`run_overnight.sh` is currently broken** for this setup: line 19 does
-> `source venv/bin/activate`, and there is no `venv/` in the repo anymore. Change it to
-> `source ~/venvs/amw/bin/activate` before any overnight run. Line 36 also hardcodes
-> `--year 2025`.
+> **`run_overnight.sh` was deleted on 2026-08-07.** It ran all 16 periods back-to-back at
+> full CPU under `caffeinate -im` — the exact configuration that overheated the laptop —
+> hardcoded `--year 2025`, and wrote into run 1's output directory. `run_staged.sh` does
+> everything it did, safely. Recover it from history if ever needed:
+> `git log --oneline -- timeseries/run_overnight.sh`.
 
 ### 0.9 Troubleshooting
 
@@ -364,6 +365,154 @@ root-cause evidence for each: `RUN2_SETUP_AND_AUDIT.md` §1.
 | SSL certificate errors on macOS Python | Run `/Applications/Python 3.11/Install Certificates.command`. |
 | TF/Keras errors loading the `.h5` | Wrong TF version → reinstall from the lock file under Python 3.11. |
 | Laptop overheats on a long run | No safeguard exists in the code (§3 of the run-2 doc). `OMP_NUM_THREADS=4 TF_NUM_INTRAOP_THREADS=4 nice -n 10 … --max_workers 4`. |
+
+---
+
+## Part 0.5 — WHAT THIS FORK ADDS (fork work vs. upstream AMW)
+
+**Every statement in this Part was mechanically verified against the repository on
+2026-08-07 at commit `da7a79d` (upstream/main `bbbcb2d`) — not written from memory.**
+Verification commands are given so any claim can be re-checked after the next sync.
+
+### 0.5.1 The one-sentence version
+
+Upstream Amazon Mining Watch detects mining in **single, long composite windows**. This
+fork asks whether the same detector can support a **monthly time series** — which requires
+distinguishing "no mine" from "no data", so it adds a cloud/coverage measurement layer, a
+panel data structure that keeps every chip's continuous score, and the statistical
+machinery to compare monthly against quarterly composites. **No upstream inference code was
+modified to do it.**
+
+### 0.5.2 `core/` is byte-identical to upstream — verified, all 16 files
+
+```bash
+for f in core/*.py core/*.ipynb core/README.md; do
+  [ "$(git hash-object "$f")" = "$(git rev-parse upstream/main:"$f")" ] \
+    && echo "identical $f" || echo "*** DIFFERS $f"
+done
+```
+
+All 16 files return `identical`: `gee.py`, `inference_engine.py`, `inference_pipeline.py`,
+`model_library.py`, `postprocess.py`, `tile_utils.py`, `tf_darwin.py`,
+`dense_embedding_cache.py`, `sam2_build_cog.py`, `sam2_combine_masks.py`, `sam2_mask.py`,
+`README.md`, and the four notebooks.
+
+This is a deliberate architectural constraint, not an accident: `git checkout upstream/main
+-- core/` must always be safe. The fork reuses upstream's building blocks
+(`get_tile_data`, `cut_chips`, `_model_infer`, `_probs_from_predictions`) by *calling* them,
+and `panel.py:143-146` asserts those attributes still exist so a future sync fails loudly
+rather than drifting silently.
+
+**Consequence for the paper:** every probability this fork reports is bit-identical to what
+upstream's `bulk_predict` would produce for the same chip and window. The fork changes what
+is *recorded* and *analysed*, never what is *computed*.
+
+### 0.5.3 New files — 100 % fork work
+
+| file | lines | what it does |
+|---|---|---|
+| `timeseries/coverage.py` | 205 | **The cloud flag.** Per-pixel `N_CLEAR`/`N_TOTAL` scene counts on the same 576×576 grid as the imagery, mirroring `gee.py`'s composite construction exactly. This is what makes "no data" distinguishable from "no mine". |
+| `timeseries/panel.py` | 413 | **The panel builder.** One row per chip per period with the *continuous* score, the coverage flag, the six ensemble members, and full provenance. |
+| `timeseries/run_trials.py` | 161 | Orchestrator over 12 monthly + 4 quarterly windows; resume-safe. |
+| `timeseries/analysis.py` | 723 | The monthly-vs-quarterly statistical comparison → `REPORT.md`, figures, CSV tables. |
+| `timeseries/run_staged.sh` | 260 | **The only entry point.** Duty-cycled runner: one period per process, cooldowns, CPU caps, background priority, optional `--analyse`. |
+| `timeseries/resource_limits.py` | 140 | CPU thread caps applied before TensorFlow initialises. |
+| `timeseries/explore_results.ipynb` | 129 | Interactive exploration of the analysis outputs. |
+| `timeseries/README.md` | 62 | Module overview. |
+| `time_tiles.py` | 139 | Per-tile timing benchmark for cost extrapolation. |
+| `scripts/provenance_report.py` | 140 | Regenerates `docs/PROVENANCE.md`, the per-file fork/upstream manifest. |
+| `scripts/sync_upstream.sh` | 51 | Upstream sync with auto-resolution of archived-file conflicts. |
+| `requirements-lock_2026-07-17.txt` | 107 | Fully pinned environment (upstream ships only a loose `requirements.txt`). |
+| `docs/` × 8 | ~3,500 | `CODE_WALKTHROUGH`, `DECISION_REGISTER`, `GIT_PLAYBOOK`, `LECTURE`, `OPTIMIZATIONS`, `PROVENANCE`, `RUN2_SETUP_AND_AUDIT`, `pipeline_spatial_card`. |
+
+Regenerate this list with:
+```bash
+git diff --name-status upstream/main HEAD | awk '$1=="A"' \
+  | grep -vE "data/|models/|_archive"
+```
+
+### 0.5.4 Upstream files modified — only three, and only barely
+
+`git diff --name-status upstream/main HEAD | awk '$1=="M"'` returns five entries, two of
+which are project metadata (`.gitignore`, `README.md`). The three code files were checked
+by parsing both versions to an AST and comparing executable statements:
+
+| file | executable change |
+|---|---|
+| `scripts/concatenate.py` | **none** — comments and docstrings only |
+| `scripts/dissolve.py` | **one line**: removed a stale hardcoded `default=` on a positional CLI argument |
+| `utils/gee_data_pull.py` | **one line**: `sys.path` `'gee'` → `'core'`, because upstream deleted the `gee/` folder |
+
+Everything else in those files is annotation. Re-verify with:
+
+```bash
+git show upstream/main:scripts/dissolve.py > /tmp/up.py
+python3 -c "import ast;print(ast.unparse(ast.parse(open('scripts/dissolve.py').read())))" > /tmp/a
+python3 -c "import ast;print(ast.unparse(ast.parse(open('/tmp/up.py').read())))" > /tmp/b
+diff /tmp/b /tmp/a
+```
+
+### 0.5.5 The four substantive research contributions
+
+Everything above is inventory. These are the actual intellectual differences.
+
+**(1) The cloud flag — `coverage.py`.** Upstream's pipeline cannot tell a cloud gap from a
+true negative. `gee.py:132` masks each scene at `cs_cdf >= 0.6` before the median; a pixel
+cloudy in *every* scene survives as fill value 0, and an all-zero chip simply scores "no
+mine". For a single annual map that is tolerable. For a monthly time series it is fatal:
+apparent dips in mining would just be wet-season cloud, and the missingness is almost
+certainly MNAR because clouds *and* mining activity both follow the season.
+
+`coverage.py` fetches a second raster per tile on the identical grid — `N_CLEAR` (scenes
+passing the cloud mask) and `N_TOTAL` (scenes covering the pixel) — using
+`ImageCollection.count()` on band B2. `N_CLEAR == 0` is exactly "this pixel is fill".
+`panel.py:75-88 fill_zero_mismatch` then *empirically verifies* the fill-is-zero assumption
+per tile rather than assuming it, and the result is reported in §B of every run.
+
+**(2) The panel instead of a filtered detection list — `panel.py`.** Upstream's
+`bulk_predict` writes only chips *above* threshold, cumulatively appended per region. This
+fork writes **every** chip, with its continuous probability and its coverage flag. Two
+consequences that matter for econometrics: thresholding becomes a post-hoc modelling choice
+that can be varied in analysis (`analysis.py:74` sweeps 0.30–0.60), and missingness becomes
+an explicit per-chip variable instead of an invisible confound. `chip_id` is deterministic
+across periods, so the result is a genuinely balanced panel.
+
+**(3) Ensemble uncertainty — schema v2, `panel.py`.** Verified from the model file: the
+production `.h5` is a Keras `Concatenate` of six single-sigmoid CNNs, so `_model_infer`
+returns `(n, 6)` and `_probs_from_predictions` (`core/inference_engine.py:632`) collapses it
+with `np.mean(axis=1)`. Upstream discards the members. This fork keeps them
+(`p_m0 … p_m5`), because *do the six models disagree more in cloudy months?* is a sharper
+instrument-stability metric than the mean alone — and it is unrecoverable afterwards without
+re-running all inference. `prob` remains bit-exactly `mean(p_m*)`.
+
+**(4) Provenance and reproducibility.** Upstream ships no lock file, no per-file
+fork/upstream manifest, and no configuration record in its outputs. This fork adds a pinned
+lock file, `scripts/provenance_report.py` + `docs/PROVENANCE.md`, PROVENANCE tags in every
+fork-touched file, twelve provenance columns in every panel row, and
+`analysis.py:_check_provenance`, which **refuses** to pool panels built with different
+`clear_threshold` values and warns on mixed models, schemas or code versions.
+
+### 0.5.6 Engineering added on top (not research, but load-bearing)
+
+- **Resource protection** (`resource_limits.py`, `run_staged.sh`): upstream has no CPU cap,
+  memory cap, process priority or thermal safeguard of any kind — audited and confirmed in
+  `RUN2_SETUP_AND_AUDIT.md` §3. This fork caps TensorFlow intra/inter-op threads and BLAS
+  threads, runs at background QoS, and duty-cycles work against rest.
+- **Resume semantics at two levels**: period-level (skip existing parquet) and tile-level
+  (disk cache), so any crash costs at most one period's inference.
+- **Documented threshold provenance**: `RUN2_SETUP_AND_AUDIT.md` §4 traces every threshold
+  in the pipeline to its source, and records that only `t_main = 0.43` has any stated
+  derivation — a fact not documented anywhere upstream.
+
+### 0.5.7 What is emphatically NOT fork work
+
+The detector itself. The CNN ensemble, its training data, its architecture, the six member
+models, the composite construction, the tiling geometry, the chipping, the dual-threshold
+post-processing and the SAM2 segmentation stack are **all upstream Amazon Mining Watch
+work**. This fork contributes measurement infrastructure and analysis around that detector.
+Any write-up should cite `earthrise-media/mining-detector` for the model and reserve novelty
+claims for the cloud flag, the panel design, the ensemble-uncertainty retention, and the
+monthly-vs-quarterly comparison.
 
 ---
 
