@@ -93,17 +93,22 @@ mkdir -p ~/venvs
 # 3. install the pinned stack
 source ~/venvs/amw/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r ~/Documents/RA_Raji/AMW-mining-detector/requirements-lock_2026-07-17.txt
+python -m pip install -r ~/RA_Raji/AMW-mining-detector/requirements-lock_2026-07-17.txt
 ```
 
-**Why outside the repo.** The project folder lives under `~/Documents`, which macOS
-syncs through iCloud (Desktop & Documents Folders). The iCloud file provider refuses the
-symlink and file-flag operations venv creation performs, so `python -m venv venv` inside
-the repo returns `Error: [Errno 1] Operation not permitted`. This is a file-provider
-refusal, not a Unix permission — `chmod` and `sudo` do nothing. Verified 2026-08-04:
-`python -m venv /tmp/venvtest` succeeds and `os.getcwd()` inside the repo succeeds, while
-`python -m venv venv` in the repo fails. **Code runs fine from the iCloud folder; only the
-environment cannot live there.** Full evidence: `RUN2_SETUP_AND_AUDIT.md` §1.4.
+**Why outside the repo.** Originally a hard constraint: the project lived under
+`~/Documents`, which macOS syncs through iCloud, and that file provider refuses the
+symlink and file-flag operations venv creation performs — `python -m venv venv` returned
+`Error: [Errno 1] Operation not permitted`, unfixable with `chmod` or `sudo`
+(`RUN2_SETUP_AND_AUDIT.md` §1.4).
+
+**The repo moved to `~/RA_Raji/AMW-mining-detector` on 2026-08-07, so this is no longer
+forced** — but keep the venv out anyway. It costs nothing and it makes the environment
+immune to any future repo move, which is what caused the original day-long failure (§0.2).
+
+**Never put the project back under `~/Documents`.** Beyond the venv problem, iCloud evicts
+cold files to `.icloud` placeholders, and a placeholder is not something `rasterio` can
+open — with a 4.8 GB/year tile cache that is a live hazard, not a theoretical one.
 
 **Concepts.** A **venv** is a private copy of Python + packages, so this project's pinned
 versions cannot conflict with anything else on the machine. `source .../activate` modifies
@@ -222,7 +227,7 @@ This performs the checkpoint surgery of Part III (extract teacher weights, rebui
 
 ```bash
 source ~/venvs/amw/bin/activate
-cd ~/Documents/RA_Raji/AMW-mining-detector
+cd ~/RA_Raji/AMW-mining-detector
 export EE_PROJECT=deforestation-and-mining
 
 cd core
@@ -236,7 +241,7 @@ python -c "import gee; print('GEE auth OK')"
 > eager behaviour and is stale on this point.) Use the check below to exercise auth for real:
 
 ```bash
-cd ~/Documents/RA_Raji/AMW-mining-detector
+cd ~/RA_Raji/AMW-mining-detector
 python - <<'PY'
 import sys; sys.path.insert(0, "core")
 import gee, tile_utils, geopandas as gpd
@@ -284,7 +289,7 @@ gsutil cp --billing-project=$EE_PROJECT gs://amazon-mining-watch/sam2/SAM_model_
 ```bash
 # --- every session, in this order ---
 source ~/venvs/amw/bin/activate                                  # venv is OUTSIDE the repo
-cd ~/Documents/RA_Raji/AMW-mining-detector
+cd ~/RA_Raji/AMW-mining-detector
 export EE_PROJECT=deforestation-and-mining                       # .env is NOT read by Python
 which python && python -VV                                       # gate: ~/venvs/amw/..., 3.11.x
 
@@ -332,7 +337,7 @@ root-cause evidence for each: `RUN2_SETUP_AND_AUDIT.md` §1.
 | `Using Python 3.14.0 environment at: ~/.venv` **[2026-08-04]** | A global venv is active and shadowing the project's. `deactivate; unset VIRTUAL_ENV`, then check `~/.zshrc` for an auto-activation line. |
 | `Because pandas==3.0.3 depends on numpy>=2.3.3 … unsatisfiable` **[2026-08-04]** | Not a broken lock file — the resolver targeted a Python newer than 3.11, where pandas raises its numpy floor. `tensorflow==2.14.0` has no wheels above cp311. Force 3.11. |
 | `warning: … incompatible with the project's Python requirement: >=3.13` **[2026-08-04]** | `uv init` was run and left a `pyproject.toml`. `rm -f pyproject.toml .python-version uv.lock main.py && rm -rf .venv`. |
-| `Error: [Errno 1] Operation not permitted` on `python -m venv venv` **[2026-08-04]** | The repo is in iCloud-managed `~/Documents`; the file provider refuses venv creation. Not fixable with `sudo`. Build the venv at `~/venvs/amw` instead (§0.3). |
+| `Error: [Errno 1] Operation not permitted` on `mkdir` or `python -m venv` **[2026-08-04, now historical]** | The path is inside iCloud-managed `~/Documents`; the file provider refuses new directories and venv creation. Not fixable with `sudo`. Resolved by relocating the repo to `~/RA_Raji` on 2026-08-07 — recurs immediately if anything moves back under `~/Documents`. |
 | `OSError: failed to make path absolute` / `Fatal Python error: error evaluating path` **[2026-08-04]** | Same iCloud cause, seen when a tool spawns the venv's `bin/python` symlink. Same fix. |
 | `error: No pyproject.toml found in current directory or any parent` from `uv sync` | Expected — this is a `requirements.txt` project. Do not run `uv sync`/`uv add`/`uv init`. |
 

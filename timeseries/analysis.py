@@ -97,7 +97,54 @@ def load_panels(panels_dir: Path) -> gpd.GeoDataFrame:
     parts = [gpd.read_parquet(f) for f in files]
     df = pd.concat(parts, ignore_index=True)
     log.info("Loaded %d chip-period rows from %d panels", len(df), len(files))
+    _check_provenance(df, files)
     return gpd.GeoDataFrame(df, geometry="geometry", crs=parts[0].crs)
+
+
+def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
+    """Refuse to silently pool panels produced under different configurations.
+
+    This glob has no year, model or threshold filter, and ``pd.concat`` fills missing
+    columns with NaN without complaint — so panels from two different models, two cloud
+    thresholds, or schema v1 and v2 would merge into one dataframe and produce a
+    plausible-looking but meaningless report. Panel schema v2 (panel.py) records the
+    configuration in every row precisely so this check is possible.
+
+    Mixed ``clear_threshold`` is fatal: it changes the composite the CNN saw, so the
+    probabilities are not comparable. Everything else warns loudly.
+    """
+    if "schema_version" not in df.columns:
+        log.warning(
+            "Panels carry no provenance columns (schema v1, written before "
+            "2026-08-04). Cannot verify that they share a model and cloud threshold — "
+            "results are only as trustworthy as your bookkeeping.")
+        return
+
+    if df["schema_version"].nunique(dropna=False) > 1:
+        log.warning("MIXED PANEL SCHEMAS: %s. Rows from older panels will have NaN in "
+                    "the newer columns.", sorted(df["schema_version"].dropna().unique()))
+
+    if "clear_threshold" in df.columns and df["clear_threshold"].nunique(dropna=True) > 1:
+        sys.exit(
+            f"FATAL: panels in this directory were built with different "
+            f"clear_threshold values {sorted(df['clear_threshold'].dropna().unique())}. "
+            f"The cloud mask is applied before the median composite (gee.py:132), so the "
+            f"probabilities are not comparable. Separate them into different --panels_dir.")
+
+    for col, label in (("model", "model file"),
+                       ("model_sha256", "model weights"),
+                       ("chip_size", "chip size"),
+                       ("stride", "stride"),
+                       ("git_commit", "code version")):
+        if col in df.columns and df[col].nunique(dropna=True) > 1:
+            log.warning("MIXED %s across panels: %s — check this is intended.",
+                        label, sorted(map(str, df[col].dropna().unique()))[:5])
+
+    n_periods = df["period"].nunique()
+    log.info("Provenance OK: schema v%s, model=%s, clear_threshold=%s, %d periods "
+             "from %d files",
+             df["schema_version"].iloc[0], df["model"].iloc[0],
+             df["clear_threshold"].iloc[0], n_periods, len(files))
 
 
 def load_tile_stats(tiles_dir: Path) -> pd.DataFrame:

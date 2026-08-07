@@ -120,7 +120,13 @@ def member_probs(raw: np.ndarray) -> Optional[np.ndarray]:
 
 
 def _git_commit(repo_root: Path = REPO_ROOT) -> str:
-    """Short commit hash, suffixed ``-dirty`` if the tree has uncommitted changes."""
+    """Short commit hash, suffixed ``-dirty`` if TRACKED files have local modifications.
+
+    ``--untracked-files=no`` is deliberate: a run writes its own outputs into the tree
+    (panels, logs, run directories), so counting untracked files would mark every single
+    panel ``-dirty`` and make the flag meaningless. What matters for provenance is
+    whether the *committed code* differs from what is running.
+    """
     try:
         head = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
@@ -128,7 +134,8 @@ def _git_commit(repo_root: Path = REPO_ROOT) -> str:
         if head.returncode != 0:
             return "unknown"
         status = subprocess.run(
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            ["git", "-C", str(repo_root), "status", "--porcelain",
+             "--untracked-files=no"],
             capture_output=True, text=True, timeout=15)
         dirty = "-dirty" if status.stdout.strip() else ""
         return head.stdout.strip() + dirty

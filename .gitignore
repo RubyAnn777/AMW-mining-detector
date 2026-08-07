@@ -7,7 +7,6 @@ __pycache__/
 logs/
 docs/design/*.html
 docs/design/*_files/
-docs/
 data/training_data
 data/outputs/old
 data/old
@@ -43,4 +42,7 @@ cost_estimate.ipynb
 data/timeseries/cache/
 data/timeseries/runlog_*.log
 data/timeseries/nohup_overnight.log
+data/timeseries_run2/cache/
+data/timeseries_run2/runlog_*.log
+data/timeseries_run2/staged_*.log
 scripts/boundaries/diffs/
