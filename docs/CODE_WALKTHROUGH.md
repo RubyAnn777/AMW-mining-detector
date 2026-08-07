@@ -1,6 +1,17 @@
 <!-- PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); not in upstream earthrise-media/mining-detector -->
 # The Complete Code Walkthrough
 
+> ## ✅ PART 0 REWRITTEN 2026-08-04
+>
+> Part 0 (the setup manual) was rebuilt from scratch after a full day of setup
+> failures on a new laptop. Every command in it is verified against the installed
+> library source or against an observed error. The incident log with root-cause
+> evidence for each fault is `docs/RUN2_SETUP_AND_AUDIT.md` §1.
+>
+> **The three things that changed and will surprise you:** the venv now lives at
+> `~/venvs/amw`, **outside** the repo; Earth Engine auth needs
+> `auth_mode='localhost'`; and the tile cache must be kept out of iCloud.
+
 > ## ⚠️ STATUS (2026-07-27): parts of this document describe the LEGACY model
 >
 > This walkthrough was written against the **old SSL4EO-MLP pipeline**
@@ -50,28 +61,80 @@ python3.11 --version    # expect Python 3.11.x
 git --version
 ```
 
-Why 3.11 specifically: the repo is tested on Pythons 3.9–3.11 and the dependency lock file was built under 3.11. Newer Pythons will fight the pinned `tensorflow==2.14`. Linux: `sudo apt install git python3.11 python3.11-venv` (add the deadsnakes PPA on older Ubuntu).
+**Why 3.11 is not a preference but a hard ceiling:** `tensorflow==2.14.0` publishes no wheels above cp311. Python 3.12, 3.13 and 3.14 are all impossible. If a dependency resolver ever tells you `pandas==3.0.3 depends on numpy>=2.3.3`, it is not a bad lock file — it means you targeted the wrong interpreter, because pandas raises its numpy floor on newer Pythons. Linux: `sudo apt install git python3.11 python3.11-venv` (deadsnakes PPA on older Ubuntu).
 
 ### 0.2 Get the code
 
 ```bash
-cd ~/RA_Raji                                   # or wherever you keep projects
+cd ~/Documents/RA_Raji                         # or wherever you keep projects
 git clone https://github.com/<your-account>/AMW-mining-detector.git
 cd AMW-mining-detector
 ```
 
-`git clone` copies the full repository including history. No Git-LFS is involved — the 683 KB classifier `.h5` ships inside the repo; only the 700 MB backbone must be fetched separately (§0.5).
+`git clone` copies the full repository including history. No Git-LFS is involved — the classifier `.h5` ships inside the repo; only the legacy 700 MB backbone would need fetching separately (§0.5 — not needed for the current model).
 
-### 0.3 The Python environment
+> **Do not move or rename the repo after building the environment.** Virtualenvs hardcode
+> the absolute repo path in `bin/activate` and in every console-script shebang. Moving the
+> folder leaves `activate` prepending a **non-existent** directory to `PATH`: the shell
+> still prints `(venv)`, but `python` silently falls through to some other interpreter and
+> every import fails. This cost a full day once. See `RUN2_SETUP_AND_AUDIT.md` §1.1.
+
+### 0.3 The Python environment — **build it OUTSIDE the repo**
 
 ```bash
-python3.11 -m venv venv        # create an isolated environment in ./venv
-source venv/bin/activate       # activate it for THIS terminal session
-pip install --upgrade pip
-pip install -r requirements-lock_2026-07-17.txt
+# 1. locate a 3.11 interpreter (uv is optional; brew's python3.11 works identically)
+UVPY=$(uv python find 3.11)     # or: UVPY=$(brew --prefix python@3.11)/bin/python3.11
+"$UVPY" -VV                     # must print 3.11.x
+
+# 2. create the venv in a plain local directory, NOT in the repo
+mkdir -p ~/venvs
+"$UVPY" -m venv ~/venvs/amw
+
+# 3. install the pinned stack
+source ~/venvs/amw/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r ~/Documents/RA_Raji/AMW-mining-detector/requirements-lock_2026-07-17.txt
 ```
 
-Concepts: a **venv** is a private copy of Python + packages inside the project folder, so this project's pinned versions can't conflict with anything else on the machine. `source venv/bin/activate` modifies the current shell's `PATH` so `python`/`pip` point into `venv/` — you must re-run it in every new terminal (the `(venv)` prompt prefix tells you it's active). The **lock file** pins every package to the exact working version (`tensorflow==2.14.0`, `torch==2.13.0`, `timm==1.0.28`, `geopandas==1.1.0`, `earthengine-api==1.7.35`, `descarteslabs==2.1.2`, …) — always prefer it over the loose `requirements.txt`. Expect a 3–4 GB download (torch + tensorflow). **Linux note:** the lock was generated on macOS and includes `tensorflow-macos==2.14.0`; on Linux, delete that line from a copy of the file and install from the copy.
+**Why outside the repo.** The project folder lives under `~/Documents`, which macOS
+syncs through iCloud (Desktop & Documents Folders). The iCloud file provider refuses the
+symlink and file-flag operations venv creation performs, so `python -m venv venv` inside
+the repo returns `Error: [Errno 1] Operation not permitted`. This is a file-provider
+refusal, not a Unix permission — `chmod` and `sudo` do nothing. Verified 2026-08-04:
+`python -m venv /tmp/venvtest` succeeds and `os.getcwd()` inside the repo succeeds, while
+`python -m venv venv` in the repo fails. **Code runs fine from the iCloud folder; only the
+environment cannot live there.** Full evidence: `RUN2_SETUP_AND_AUDIT.md` §1.4.
+
+**Concepts.** A **venv** is a private copy of Python + packages, so this project's pinned
+versions cannot conflict with anything else on the machine. `source .../activate` modifies
+the current shell's `PATH` so `python`/`pip` point into it — re-run it in every new
+terminal. The **lock file** pins every package to the exact working version
+(`tensorflow==2.14.0`, `torch==2.13.0`, `geopandas==1.1.0`, `earthengine-api==1.7.35`,
+`descarteslabs==2.1.2`, …) — always prefer it to the loose `requirements.txt`. Expect a
+3–4 GB download. **Linux note:** the lock was generated on macOS and includes
+`tensorflow-macos==2.14.0`; on Linux delete that line from a copy and install from the copy.
+
+**Do not run `uv init`, `uv sync` or `uv add` in this repo.** It is a `requirements.txt`
+project, not a uv project. `uv init` writes a `pyproject.toml` pinned to `>=3.13` with
+`dependencies = []`, a `.python-version` of `3.13`, and a *second* venv at `.venv/` — after
+which nothing resolves. The only uv command that belongs here is
+`uv pip install -r requirements-lock_2026-07-17.txt`, and even that is optional.
+
+### 0.3b Verification gate — run this every session, before anything else
+
+```bash
+python -VV                 # must be 3.11.x
+which python               # must be /Users/<you>/venvs/amw/bin/python
+python -c "import ee, geopandas, tensorflow, numpy, pandas; print(numpy.__version__, pandas.__version__)"
+```
+
+Expect `3.11.15`, the `~/venvs/amw` path, and `1.26.4 3.0.3`.
+
+**`(venv)` in the prompt proves nothing.** If `rye` is installed, `~/.rye/shims` sits ahead
+of the venv on `PATH` and intercepts bare `python`. A venv with a valid path still wins
+(activation prepends its `bin/`), but a venv with a dead path falls straight through to the
+shim — producing `ModuleNotFoundError` for packages that are demonstrably installed. Always
+trust `which python`, never the prompt.
 
 ### 0.4 Google Earth Engine access (the part people get stuck on)
 
@@ -79,25 +142,66 @@ The pipeline computes cloud-free composites *on Google's servers*; you need (a) 
 
 1. **Create a Cloud project.** [console.cloud.google.com](https://console.cloud.google.com) → project picker (top bar) → *New Project* → any name. Note the **Project ID** (the globally-unique lowercase identifier, e.g. `amw-research-2026` — ID, not display name; you'll need it everywhere).
 2. **Register it for Earth Engine.** [code.earthengine.google.com/register](https://code.earthengine.google.com/register) → choose the project → *Noncommercial / research* (free). Also enable the API: console → *APIs & Services → Library →* "Google Earth Engine API" → *Enable*.
-3. **Install the gcloud CLI** (Google's command-line tool; it also manages the credentials that Python libraries read):
+3. **Authenticate — use `localhost` mode, not the default.**
+
+   ```bash
+   python - <<'PY'
+   import ee
+   ee.Authenticate(
+       auth_mode='localhost',
+       scopes=['https://www.googleapis.com/auth/earthengine',
+               'https://www.googleapis.com/auth/cloud-platform'],
+       force=True)
+   PY
+   ```
+
+   **Why not bare `ee.Authenticate()`.** `oauth.py:550-558` auto-selects the mode; because
+   `_no_gcloud()` (`oauth.py:397`) is false when gcloud is installed, it falls through to
+   `auth_mode='gcloud'`, which shells out using **gcloud's own OAuth client ID**
+   (`764086051850-…`). Google now blocks the `drive` scope for that client ID, so the
+   browser returns *Access blocked*. `earthengine-api` ships its own client ID
+   (`517222506229-…`, `oauth.py:43-45`), which the `localhost` and `notebook` modes use.
+   Forcing `localhost` bypasses gcloud entirely. Port defaults to 8085 (`oauth.py:607`);
+   use `auth_mode='localhost:0'` to auto-select if that port is taken.
+
+   **Dropping `drive` and `devstorage` is safe — verified, not assumed.** `core/gee.py:55`
+   requests exactly `["https://www.googleapis.com/auth/earthengine"]` on the
+   service-account path, and all data flows through `ee.data.computePixels`; nothing
+   touches Drive or Cloud Storage. Reduced scopes also do not break `ee.Initialize()`:
+   `data.py:237` calls `oauth.is_valid_credentials(credentials)`, whose signature
+   (`oauth.py:154`) takes **no** `scopes` argument and only attempts a token refresh. The
+   scope check lives solely in `_valid_credentials_exist()` (`oauth.py:139-150`), used only
+   by `authenticate()` to decide whether to skip the flow.
+
+   Credentials land in `~/.config/earthengine/credentials`. Verify with
+   `ls -l ~/.config/earthengine/credentials`.
+
+   Avoid `auth_mode='notebook'` for unattended runs — `oauth.py:510` states those
+   credentials **expire in 7 days**.
+
+4. **Optional: the gcloud CLI.** Only needed for `gsutil` (§0.7) and ADC. `ee.Initialize()`
+   reads `~/.config/earthengine/credentials` first and falls back to ADC
+   (`data.py:214-231`), so step 3 alone is sufficient.
    ```bash
    brew install --cask google-cloud-sdk     # Linux: https://cloud.google.com/sdk/docs/install
    ```
-4. **Authenticate — two different commands, both required:**
-   ```bash
-   gcloud auth login                        # identity for gcloud itself (opens browser)
-   gcloud auth application-default login    # writes Application Default Credentials (ADC)
-   ```
-   The second writes a JSON token to `~/.config/gcloud/application_default_credentials.json` — **that** file is what `import ee` silently reads. Forgetting it is the #1 setup failure.
 
-Finally tell the code which project to bill/attribute requests to:
+Finally tell the code which project to attribute requests to:
 
 ```bash
-export EE_PROJECT=your-project-id                          # this shell only
-echo 'export EE_PROJECT=your-project-id' >> ~/.zshrc       # every future shell
+export EE_PROJECT=deforestation-and-mining                          # this shell only
+echo 'export EE_PROJECT=deforestation-and-mining' >> ~/.zshrc       # every future shell
 ```
 
-(`export` sets an **environment variable** — a named value child processes inherit; `gee.py` reads it via `os.environ.get('EE_PROJECT', ...)` at import time. `~/.zshrc` runs at every new zsh shell; on Linux/bash use `~/.bashrc`.)
+> **`.env` is invisible to Python — this is a silent failure, not a loud one.**
+> `core/gee.py:20` reads `os.environ.get("EE_PROJECT", "earthindex")`. No module in this
+> repo calls `load_dotenv`, and `python-dotenv` is not installed. Only
+> `timeseries/run_overnight.sh:22-27` parses `.env`, via a `sed` workaround (the file is
+> not valid shell — it has spaces around `=`). **Without the `export`, Earth Engine is
+> initialised against `earthindex`, upstream's project**, and the resulting permission
+> error never names your project.
+
+(`export` sets an **environment variable**, inherited by child processes; `gee.py` reads it at import time. `~/.zshrc` runs at every new zsh shell; on Linux/bash use `~/.bashrc`.)
 
 ### 0.5 Model weights
 
@@ -117,11 +221,39 @@ This performs the checkpoint surgery of Part III (extract teacher weights, rebui
 ### 0.6 Smoke test, then first real run (updated for the new CNN model, `core/`)
 
 ```bash
+source ~/venvs/amw/bin/activate
+cd ~/Documents/RA_Raji/AMW-mining-detector
+export EE_PROJECT=deforestation-and-mining
+
 cd core
 python -c "import gee; print('GEE auth OK')"
 ```
 
-This alone exercises the whole auth chain (`import gee` calls `ee.Initialize` — Part XIV trap #1). If it prints OK, run a small region **with the new model** (no `--embedding_strategy` flag → default `none` → CNN on raw chips):
+> **Caveat on this one-liner.** `import gee` does **not** call `ee.Initialize` at import
+> time. `gee.py:25 _ensure_earth_engine_initialized()` is a lazy singleton invoked from
+> `GEE_Data_Extractor.__init__` (`gee.py:112`). So `import gee` printing OK proves the
+> *venv* is correct — it does **not** prove auth works. (Part XIV trap #1 describes the old
+> eager behaviour and is stale on this point.) Use the check below to exercise auth for real:
+
+```bash
+cd ~/Documents/RA_Raji/AMW-mining-detector
+python - <<'PY'
+import sys; sys.path.insert(0, "core")
+import gee, tile_utils, geopandas as gpd
+cfg = gee.DataConfig()
+ex  = gee.GEE_Data_Extractor("2025-07-01", "2025-08-01", cfg)   # <- this hits Earth Engine
+region = gpd.read_file("data/boundaries/la_pampa_corridor.geojson").union_all()
+tiles  = tile_utils.create_tiles(region, cfg.tilesize, cfg.pad)
+print("tiles in AOI:", len(tiles))                              # expect 80
+px = ex.get_tile_data(tiles[0])
+print("tile shape:", px.shape)                                  # expect (576, 576, 13)
+PY
+```
+
+`576 = 552 + 2×12` (`gee.py:68-69`, `gee.py:190`). If this prints, the whole chain —
+interpreter, packages, credentials, project, network — is verified end to end.
+
+Then run a small region **with the new model** (no `--embedding_strategy` flag → default `none` → CNN on raw chips):
 
 ```bash
 python inference_pipeline.py \
@@ -150,31 +282,83 @@ gsutil cp --billing-project=$EE_PROJECT gs://amazon-mining-watch/sam2/SAM_model_
 ### 0.8 Everyday-use cheat sheet (new model)
 
 ```bash
-cd ~/RA_Raji/AMW-mining-detector && source venv/bin/activate && cd core  # every session
+# --- every session, in this order ---
+source ~/venvs/amw/bin/activate                                  # venv is OUTSIDE the repo
+cd ~/Documents/RA_Raji/AMW-mining-detector
+export EE_PROJECT=deforestation-and-mining                       # .env is NOT read by Python
+which python && python -VV                                       # gate: ~/venvs/amw/..., 3.11.x
+
+# --- monthly/quarterly panels (the fork's pilot; cache kept OUT of iCloud) ---
+python timeseries/run_trials.py --out_root data/timeseries_run2 \
+    --cache_dir ~/amw_cache/2025 --year 2025 --max_workers 4     # add --limit_tiles 2 --months 2025-07 to smoke-test
+python timeseries/analysis.py --panels_dir data/timeseries_run2/panels \
+    --tiles_dir data/timeseries_run2/tiles --out_dir data/timeseries_run2/analysis
+
+# --- upstream-style single-period inference ---
+cd core
 python inference_pipeline.py --region_path ... --start_date ... --end_date ... \
     --model_path ../models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5 \
-    --pred_threshold 0.4 --image_cache_dir ../data/image_cache            # score a region/period
+    --pred_threshold 0.4 --image_cache_dir ~/amw_cache/adhoc     # score a region/period
 python postprocess.py <detections.geojson> --dissolve --outpath <out.geojson>  # chips → polygons
                                                    # (defaults t_main 0.43 / t_iso 0.75 fit v4.10b;
                                                    #  the old 0.925/0.975 cuts belonged to the legacy model)
 python ../utils/gee_data_pull.py <aoi.geojson> --start_date ... --end_date ...  # raw imagery
-python ../timeseries/run_trials.py --help                                  # monthly/quarterly panels + cloud flag
 jupyter lab                                                                # inference.ipynb
 ```
 
+> **Thermal note.** There is no CPU cap, memory cap, or thermal safeguard anywhere in this
+> codebase (audited 2026-08-04; `RUN2_SETUP_AND_AUDIT.md` §3). For long runs prepend
+> `OMP_NUM_THREADS=4 TF_NUM_INTRAOP_THREADS=4 nice -n 10` and pass `--max_workers 4`.
+> `run_overnight.sh` calls `caffeinate -im`, which *prevents* sleep — it is a sustained-load
+> enabler, not a protection.
+
+> **`run_overnight.sh` is currently broken** for this setup: line 19 does
+> `source venv/bin/activate`, and there is no `venv/` in the repo anymore. Change it to
+> `source ~/venvs/amw/bin/activate` before any overnight run. Line 36 also hardcodes
+> `--year 2025`.
+
 ### 0.9 Troubleshooting
+
+Every row below marked **[2026-08-04]** was hit for real during the new-laptop setup. Full
+root-cause evidence for each: `RUN2_SETUP_AND_AUDIT.md` §1.
+
+**Environment**
 
 | Symptom | Cause → fix |
 |---|---|
-| `ee.EEException: Not signed up for Earth Engine` / `no project found` | Project not registered (§0.4 step 2) or `EE_PROJECT` unset/wrong |
-| `DefaultCredentialsError` / `Could not automatically determine credentials` | Missing ADC → `gcloud auth application-default login` |
-| `PERMISSION_DENIED ... Earth Engine API has not been used` | Enable the API in the console (§0.4 step 2) |
-| `ModuleNotFoundError: gee` or any package | venv not active, or running from the wrong dir (be in `core/`) |
-| `FileNotFoundError: .../dino_vit_small_patch16_224.pt` | Wrap script not run (§0.5) |
-| `command not found: gcloud` | Restart the terminal after install (PATH), or `brew reinstall --cask google-cloud-sdk` |
-| SSL certificate errors on macOS Python | Run `/Applications/Python 3.11/Install Certificates.command` |
-| TF/Keras errors loading the .h5 | Wrong TF version → reinstall from the lock file |
-| Very slow / many retries in logs | GEE throttling → lower `--max_workers`, try off-peak |
+| `ModuleNotFoundError: No module named 'ee'` / `'geopandas'` **while `(venv)` shows in the prompt** **[2026-08-04]** | The venv's `activate` hardcodes a stale repo path (repo was moved), so `PATH` gained a dead directory and `python` fell through elsewhere. Diagnose with `which python`. Rebuild per §0.3. **Never move the repo after building the venv.** |
+| `zsh: command not found: earthengine` **[2026-08-04]** | Same cause. `earthengine` is a console script inside the venv; it only exists when the venv is genuinely active. Equivalent: `python -c "import ee; ee.Authenticate()"`. |
+| `which python` → `~/.rye/shims/python` **[2026-08-04]** | `rye` shims sit ahead of the venv on `PATH`. A *valid* venv still wins after activation; a dead one falls through. Re-activate, or `rye self uninstall`. |
+| `Using Python 3.14.0 environment at: ~/.venv` **[2026-08-04]** | A global venv is active and shadowing the project's. `deactivate; unset VIRTUAL_ENV`, then check `~/.zshrc` for an auto-activation line. |
+| `Because pandas==3.0.3 depends on numpy>=2.3.3 … unsatisfiable` **[2026-08-04]** | Not a broken lock file — the resolver targeted a Python newer than 3.11, where pandas raises its numpy floor. `tensorflow==2.14.0` has no wheels above cp311. Force 3.11. |
+| `warning: … incompatible with the project's Python requirement: >=3.13` **[2026-08-04]** | `uv init` was run and left a `pyproject.toml`. `rm -f pyproject.toml .python-version uv.lock main.py && rm -rf .venv`. |
+| `Error: [Errno 1] Operation not permitted` on `python -m venv venv` **[2026-08-04]** | The repo is in iCloud-managed `~/Documents`; the file provider refuses venv creation. Not fixable with `sudo`. Build the venv at `~/venvs/amw` instead (§0.3). |
+| `OSError: failed to make path absolute` / `Fatal Python error: error evaluating path` **[2026-08-04]** | Same iCloud cause, seen when a tool spawns the venv's `bin/python` symlink. Same fix. |
+| `error: No pyproject.toml found in current directory or any parent` from `uv sync` | Expected — this is a `requirements.txt` project. Do not run `uv sync`/`uv add`/`uv init`. |
+
+**Earth Engine**
+
+| Symptom | Cause → fix |
+|---|---|
+| Browser returns **Access blocked** during `ee.Authenticate()` **[2026-08-04]** | Auto-selected `auth_mode='gcloud'` uses gcloud's client ID, whose `drive` scope Google blocks. Force `auth_mode='localhost'` and drop the `drive`/`devstorage` scopes (§0.4 step 3). |
+| `ee.EEException: Not signed up for Earth Engine` / `no project found` | Project not registered (§0.4 step 2), or `EE_PROJECT` unset — in which case `gee.py:20` silently defaults to upstream's `earthindex`. `export EE_PROJECT=...`. |
+| `DefaultCredentialsError` / `Could not automatically determine credentials` | No credentials at all → run §0.4 step 3. |
+| `PERMISSION_DENIED … Earth Engine API has not been used` | Enable the API in the Cloud console (§0.4 step 2). |
+| Errors that name a project you don't recognise | `.env` is not read by Python. `export EE_PROJECT` explicitly. |
+| Many `SSLEOFError` / `BrokenPipeError` retries, batches slowing 40× | Network/token-refresh degradation, not CPU. Observed once for 5 h (`RUN2_SETUP_AND_AUDIT.md` §5.6). No per-period timeout exists — a hung run can stall silently. Lower `--max_workers`, retry off-peak; resume mode makes restarts cheap. |
+
+**Runtime**
+
+| Symptom | Cause → fix |
+|---|---|
+| `import gee; print('GEE auth OK')` prints OK but a real run fails on auth | That one-liner does **not** test auth — `_ensure_earth_engine_initialized()` is lazy (`gee.py:25`, called at `:112`). Use the end-to-end check in §0.6. |
+| `rasterio` errors or long hangs opening a cached `.tif` | The cache is in an iCloud folder and files were evicted to `.icloud` placeholders. Move it: `--cache_dir ~/amw_cache/<year>` (4.8 GB/year, §2.5 of the run-2 doc). |
+| `analysis.py` reports more periods than you ran | `analysis.py:94` globs *every* `panel_*.parquet` in the directory with no year filter. Use a separate `--out_root` per run. |
+| `FileNotFoundError: .../dino_vit_small_patch16_224.pt` | Legacy path only; the current CNN ensemble needs no backbone (§0.5). |
+| `command not found: gcloud` | Restart the terminal after install (PATH), or `brew reinstall --cask google-cloud-sdk`. |
+| SSL certificate errors on macOS Python | Run `/Applications/Python 3.11/Install Certificates.command`. |
+| TF/Keras errors loading the `.h5` | Wrong TF version → reinstall from the lock file under Python 3.11. |
+| Laptop overheats on a long run | No safeguard exists in the code (§3 of the run-2 doc). `OMP_NUM_THREADS=4 TF_NUM_INTRAOP_THREADS=4 nice -n 10 … --max_workers 4`. |
 
 ---
 

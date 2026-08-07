@@ -15,8 +15,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."          # repo root
 
+# NOTE 2026-08-04: prefer timeseries/run_staged.sh for anything long. This script runs all
+# 16 periods back-to-back at full CPU with caffeinate holding the machine awake — the exact
+# configuration that overheated the laptop. See docs/RUN2_SETUP_AND_AUDIT.md §3.
+
 # --- environment -------------------------------------------------------------
-source venv/bin/activate
+# The venv lives OUTSIDE the repo: ~/Documents is iCloud-managed and the file provider
+# refuses venv creation (RUN2_SETUP_AND_AUDIT.md §1.4). Override with AMW_VENV.
+source "${AMW_VENV:-$HOME/venvs/amw}/bin/activate"
 # Pull EE_PROJECT out of .env without sourcing it (the .env here is not valid
 # shell: it has spaces around '='). Tolerates KEY=v, KEY = v, and quotes.
 if [ -z "${EE_PROJECT:-}" ] && [ -f .env ]; then

@@ -7,6 +7,7 @@ __pycache__/
 logs/
 docs/design/*.html
 docs/design/*_files/
+docs/
 data/training_data
 data/outputs/old
 data/old

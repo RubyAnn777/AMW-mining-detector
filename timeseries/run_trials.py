@@ -40,6 +40,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "core"))       # upstream modules (gee, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # coverage, panel
 
+# CPU thread caps MUST be applied before TensorFlow/numpy are imported, i.e. before
+# `import panel` pulls in inference_engine -> tensorflow. See resource_limits.py and
+# docs/RUN2_SETUP_AND_AUDIT.md §3. Budget: AMW_THREADS env var, default 4, 0 = uncapped.
+from resource_limits import apply_resource_limits, describe  # noqa: E402
+
+apply_resource_limits()
+
 from panel import PeriodSpec, build_period_panel  # noqa: E402
 
 
@@ -116,6 +123,9 @@ def main() -> int:
 
     log.info("AOI=%s  model=%s  year=%d  periods=%s", args.region.name,
              args.model.name, args.year, [s.label for s in specs])
+    # Record the effective CPU caps in the runlog so a slow run can be attributed
+    # to throttling rather than guessed at afterwards.
+    log.info("resource limits: %s | max_workers=%d", describe(), args.max_workers)
 
     # ------------------------------------------------------------------- run
     failures = []
