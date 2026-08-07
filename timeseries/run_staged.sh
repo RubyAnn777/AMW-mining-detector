@@ -15,17 +15,19 @@
 # point at which stopping costs nothing. Cooling between periods is free; interrupting
 # mid-period throws away up to 28 minutes of inference.
 #
-# USAGE
-#   bash timeseries/run_staged.sh 2025-01 2025-02 2025-03 q2025Q1
-#   bash timeseries/run_staged.sh --dry-run 2025-01 q2025Q1
+# USAGE — nothing needs to be exported; every default is correct.
+#
+#   bash timeseries/run_staged.sh 2025-01 2025-02 2025-03 q2025Q1   # run a batch
+#   bash timeseries/run_staged.sh --dry-run 2025-01                 # print config, do nothing
+#   bash timeseries/run_staged.sh --force 2025-01 q2025Q1           # rebuild existing panels
 #
 # Period labels are exactly what run_trials.py --months accepts (verified at
 # run_trials.py:110-113): monthly as YYYY-MM, quarterly as qYYYYQN.
 #
-# ENVIRONMENT (all optional, defaults shown)
-#   AMW_VENV=~/venvs/amw          venv location (OUTSIDE the repo — iCloud, see §1.4)
-#   AMW_OUT_ROOT=<repo>/data/timeseries_run2
-#   AMW_CACHE_ROOT=~/amw_cache    tile cache — MUST be outside iCloud
+# ENVIRONMENT (all optional — override only if you want something non-default)
+#   AMW_VENV=~/venvs/amw          venv location (outside the repo, survives repo moves)
+#   AMW_OUT_ROOT=<repo>/data/timeseries_run2      panels, tile stats, detections, logs
+#   AMW_CACHE_ROOT=<repo>/data/timeseries/cache   tile cache (gitignored; run 1's lives here)
 #   AMW_YEAR=2025
 #   AMW_THREADS=4                 CPU thread budget (read by resource_limits.py)
 #   AMW_WORKERS=4                 --max_workers (concurrent EE requests AND batch size)
@@ -42,7 +44,11 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="${AMW_VENV:-$HOME/venvs/amw}"
 OUT_ROOT="${AMW_OUT_ROOT:-$REPO/data/timeseries_run2}"
-CACHE_ROOT="${AMW_CACHE_ROOT:-$HOME/amw_cache}"
+# Everything lives inside the repo now. The cache was only ever outside because the repo
+# sat in iCloud (RUN2_SETUP_AND_AUDIT.md §1.4); since the 2026-08-07 relocation to
+# ~/RA_Raji there is no reason to split it. data/timeseries/cache/ is already gitignored,
+# and pointing at it reuses run 1's 2,560 cached tiles instead of re-fetching them.
+CACHE_ROOT="${AMW_CACHE_ROOT:-$REPO/data/timeseries/cache}"
 YEAR="${AMW_YEAR:-2025}"
 THREADS="${AMW_THREADS:-4}"
 WORKERS="${AMW_WORKERS:-4}"
@@ -51,7 +57,18 @@ COOLDOWN_PCT="${AMW_COOLDOWN_PCT:-75}"   # AND at least this % of the period's o
 NICE_LEVEL="${AMW_NICE:-10}"
 
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then DRY_RUN=1; shift; fi
+FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --force)   FORCE=1;   shift ;;   # rebuild panels even if the parquet exists
+    --)        shift; break ;;
+    -*)        echo "unknown flag: $1" >&2; exit 2 ;;
+    *)         break ;;
+  esac
+done
+FORCE_ARG=()
+[ "$FORCE" = "1" ] && FORCE_ARG=(--force)
 
 if [ $# -eq 0 ]; then
   sed -n '3,40p' "$0"
@@ -197,7 +214,8 @@ for i in "${!PERIODS[@]}"; do
         --cache_dir "$CACHE_ROOT/$YEAR" \
         --year "$YEAR" \
         --months "$P" \
-        --max_workers "$WORKERS" >>"$LOG" 2>&1; then
+        --max_workers "$WORKERS" \
+        "${FORCE_ARG[@]}" >>"$LOG" 2>&1; then
     ELAPSED=$(( $(date +%s) - START ))
     echo "    OK in $(( ELAPSED / 60 )) min" | tee -a "$LOG"
   else

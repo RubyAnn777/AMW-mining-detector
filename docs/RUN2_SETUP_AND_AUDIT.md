@@ -15,6 +15,72 @@ log and is the operational setup manual. This document is the *evidence*; Part 0
 
 ---
 
+## 0. HOW TO RUN — the short version
+
+Three commands. Nothing to export, nothing to configure.
+
+```bash
+source ~/venvs/amw/bin/activate
+cd ~/RA_Raji/AMW-mining-detector
+bash timeseries/run_staged.sh 2025-01 2025-02 2025-03 q2025Q1
+```
+
+That's it. `EE_PROJECT` is read from `.env` by the script; every path defaults correctly.
+
+**Variants**
+
+```bash
+bash timeseries/run_staged.sh --dry-run 2025-01        # print the config, run nothing
+bash timeseries/run_staged.sh --force 2025-01          # rebuild a panel that already exists
+bash timeseries/run_staged.sh 2025-04 2025-05 2025-06 q2025Q2   # next batch, any time
+```
+
+Period labels: months as `YYYY-MM`, quarters as `qYYYYQN`. Any mix, any order, any number.
+
+**Where everything lives** (all inside the repo since the 2026-08-07 relocation):
+
+| what | path | in git? |
+|---|---|---|
+| panels, tile stats, detections, logs | `data/timeseries_run2/` | panels yes, logs no |
+| tile cache (imagery + coverage GeoTIFFs) | `data/timeseries/cache/<year>/` | no — gitignored |
+| run 1's completed 2025 outputs | `data/timeseries/` | yes |
+| the venv | `~/venvs/amw` | n/a — outside the repo on purpose (§1.6) |
+
+The venv is the one thing kept outside. Not because it must be any more, but because a venv
+hardcodes absolute paths into `bin/activate` and every console script, so keeping it out
+makes the setup immune to a future repo move — the failure that cost a full day (§1.1).
+
+**Resume behaviour.** Re-running the same command is always safe and always cheap: periods
+whose parquet exists are skipped (`run_trials.py:123-126`), and cached tiles are reused.
+Ctrl-C during a cooldown loses nothing. Ctrl-C mid-period loses only that period's parquet
+— the tiles it fetched stay cached, so the retry skips straight to inference.
+
+**Protection while it runs** — all automatic, see §3.5: 4 CPU threads, 4 workers,
+`taskpolicy -b` background priority, and a rest of 75 % of each period's own runtime
+(minimum 10 min) between periods.
+
+**Tuning**, if you ever want it:
+
+```bash
+AMW_THREADS=2 AMW_WORKERS=2 bash timeseries/run_staged.sh 2025-01   # gentler
+AMW_COOLDOWN_PCT=100 bash timeseries/run_staged.sh 2025-01          # 1:1 work:rest
+AMW_THREADS=0 bash timeseries/run_staged.sh 2025-01                 # uncapped, stock speed
+```
+
+**Analysis, after a batch:**
+
+```bash
+python timeseries/analysis.py \
+  --panels_dir data/timeseries_run2/panels \
+  --tiles_dir  data/timeseries_run2/tiles \
+  --out_dir    data/timeseries_run2/analysis
+```
+
+Runs on the laptop in about a minute — run 1 analysed 677,120 rows that fast (§2.5). No
+cloud compute is needed for the statistics at any point.
+
+---
+
 ## 1. Environment — the full incident log
 
 **Six independent faults stacked on top of each other.** Each masked the next, which is
