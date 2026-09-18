@@ -85,17 +85,7 @@ import geopandas as gpd
 # tqdm: progress bar over AOI geometries during the download loop.
 from tqdm import tqdm
 
-# --- Local imports (from the sibling core/ directory) ---
-# This file lives in utils/, but the GEE machinery lives in core/ at the
-# repo root. Resolve <repo>/core and put it at the front of sys.path so the
-# two modules below can be imported as if they were top-level modules.
-# FORK FIX 2026-08-02: upstream still inserts ../gee here — stale since their
-# gee/ -> core/ rename (bug present in upstream/main). Point at core/ instead.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
-# gee: provides DataConfig (imagery source + cloud threshold settings) and
-# GEE_Data_Extractor (builds the lazy composite; downloads/saves tiles).
-# SIDE EFFECT: importing gee runs ee.Initialize() at module import time,
-# which requires valid Earth Engine credentials (and uses EE_PROJECT).
 import gee
 # tiles_for_geometry: returns the tiles covering a geometry. For
 # Polygon/MultiPolygon it delegates to the DLTile grid (create_tiles); for

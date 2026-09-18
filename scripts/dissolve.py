@@ -1,31 +1,12 @@
-# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector
 
-# =============================================================================
-# FILE OVERVIEW — scripts/dissolve.py
-#
-# Standalone buffered-dissolve utility: merges adjacent/overlapping chip
-# detections into contiguous polygons. Same core idea as dissolve_patches()
-# in core/postprocess.py (buffer +w, union, explode, buffer -w), but with
-# optional confidence thresholding FIRST and WITHOUT the mean-confidence
-# aggregation step (output polygons carry no attribute columns).
-#
-# Pipeline role: quick post-inference cleanup of a single detections file
-# when the full postprocess.py machinery is not needed. Upstream, chips are
-# 48x48-px (~23 ha) squares in EPSG:4326 scored by the SSL4EO+MLP ensemble.
-#
-# Invocation:
-#   python scripts/dissolve.py detections.geojson --threshold 0.8 \
-#       --column confidence --buffer_width 0.00001
-#
-# Inputs on disk : one GeoJSON of chip detections (typically EPSG:4326 chip
-#   squares with a per-chip score column, e.g. 'confidence' or 'prob').
-# Outputs on disk: `<input stem>-dissolved-<threshold>.geojson` next to the
-#   input (just `-dissolved` when no threshold is given; upstream fix 2026-07).
-# =============================================================================
+import argparse
+import sys
+from pathlib import Path
 
-import argparse  # CLI parsing
+import geopandas as gpd
 
-import geopandas as gpd  # GeoDataFrames: read_file, buffer, unary_union, explode
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+from postprocess import PostprocessConfig  # noqa: E402
 
 def dissolve(path, threshold, column, buffer_width):
     """Merge adjacent patch-wise mine detections into polygons.
@@ -81,7 +62,9 @@ def dissolve(path, threshold, column, buffer_width):
     base = path.split('.geojson')[0]
     suffix = f'-dissolved-{threshold}' if threshold is not None else '-dissolved'
     outpath = base + suffix + '.geojson'
-    df.to_file(outpath)  # write dissolved polygons (driver inferred from ext)
+    # Pinned so precision does not float with the GDAL/pyogrio version; see
+    # core/postprocess.py and docs/design/persistence-planning.md.
+    df.to_file(outpath, driver="GeoJSON", COORDINATE_PRECISION=PostprocessConfig.coordinate_precision)
 
 if __name__ == '__main__':
     
