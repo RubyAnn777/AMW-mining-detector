@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork (comments/docstrings only); upstream original: earthrise-media/mining-detector
 
 import argparse
 import sys

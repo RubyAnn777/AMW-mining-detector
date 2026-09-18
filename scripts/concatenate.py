@@ -1,3 +1,4 @@
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork (comments/docstrings only); upstream original: earthrise-media/mining-detector
 """Concatenate detection FeatureCollections, deduplicating shared locations.
 
 Inference over the Amazon is run as the six Amazon_ACA subregions rather than a
