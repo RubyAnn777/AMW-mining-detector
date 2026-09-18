@@ -29,6 +29,8 @@
 #   AMW_OUT_ROOT=<repo>/data/timeseries_run2      panels, tile stats, detections, logs
 #   AMW_CACHE_ROOT=<repo>/data/timeseries/cache   tile cache (gitignored; run 1's lives here)
 #   AMW_YEAR=2025
+#   AMW_REGION=<repo>/data/boundaries/la_pampa_corridor.geojson   the AOI to score
+#   AMW_MODEL=<repo>/models/48px_v4.10b-...-ensemble.h5           the classifier
 #   AMW_THREADS=4                 CPU thread budget (read by resource_limits.py)
 #   AMW_WORKERS=4                 --max_workers (concurrent EE requests AND batch size)
 #   AMW_COOLDOWN=600              MINIMUM idle seconds between periods
@@ -50,6 +52,10 @@ OUT_ROOT="${AMW_OUT_ROOT:-$REPO/data/timeseries_run2}"
 # and pointing at it reuses run 1's 2,560 cached tiles instead of re-fetching them.
 CACHE_ROOT="${AMW_CACHE_ROOT:-$REPO/data/timeseries/cache}"
 YEAR="${AMW_YEAR:-2025}"
+# The AOI. run_trials.py:78 defaults to la_pampa_corridor.geojson; setting it explicitly
+# here means the choice is visible in the run banner and the log, not buried in a default.
+REGION="${AMW_REGION:-$REPO/data/boundaries/la_pampa_corridor.geojson}"
+MODEL="${AMW_MODEL:-$REPO/models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5}"
 THREADS="${AMW_THREADS:-4}"
 WORKERS="${AMW_WORKERS:-4}"
 LIMIT_TILES="${AMW_LIMIT_TILES:-}"       # smoke test: only the first N tiles of the AOI
@@ -109,6 +115,10 @@ if [ -z "${EE_PROJECT:-}" ] && [ -f "$REPO/.env" ]; then
   export EE_PROJECT
 fi
 : "${EE_PROJECT:?EE_PROJECT not set — put it in .env or export it}"
+
+for F in "$REGION" "$MODEL"; do
+  [ -f "$F" ] || { echo "FATAL: not found: $F" >&2; exit 1; }
+done
 
 export AMW_THREADS="$THREADS"
 
@@ -196,6 +206,8 @@ cooldown_for() {
   echo "EE_PROJECT=$EE_PROJECT"
   echo "out_root=$OUT_ROOT"
   echo "cache=$CACHE_ROOT/$YEAR"
+  echo "region=$(basename "$REGION")"
+  echo "model=$(basename "$MODEL")"
   echo "year=$YEAR  threads=$THREADS  max_workers=$WORKERS${LIMIT_TILES:+  limit_tiles=$LIMIT_TILES}"
   echo "cooldown=${COOLDOWN}s  priority=${PRIO[*]}"
   echo "periods=${PERIODS[*]}  (${#PERIODS[@]} total)"
@@ -218,6 +230,8 @@ for i in "${!PERIODS[@]}"; do
 
   START=$(date +%s)
   if "${PRIO[@]}" python "$REPO/timeseries/run_trials.py" \
+        --region "$REGION" \
+        --model "$MODEL" \
         --out_root "$OUT_ROOT" \
         --cache_dir "$CACHE_ROOT/$YEAR" \
         --year "$YEAR" \

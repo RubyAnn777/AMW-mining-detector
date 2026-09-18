@@ -166,6 +166,8 @@ mixed model or schema, but keep separate runs in separate `--out_root`s anyway.
 | `AMW_THREADS` | `4` | **CPU threads.** Sets `OMP_NUM_THREADS` etc. and TensorFlow's intra-op pool. **This is the thermal knob** — inference is 70–80 % of wall time, so this is what heats the machine. `0` = uncapped. | Lower if it runs hot; raise for speed. Measured: 4 threads ≈ 15 s/tile inference, uncapped ≈ 6 s. |
 | `AMW_WORKERS` | `4` | **Concurrent Earth Engine requests, and the tile batch size** — one knob, two effects (`panel.py:161` reuses it as the batch stride). Does *not* affect CPU much: fetching is network-wait. | 8 is upstream's own default and is safe. See §4.6. |
 | `AMW_YEAR` | `2025` | Which calendar year's period specs to generate, and the cache subdirectory. | Every non-2025 run. |
+| `AMW_REGION` | `data/boundaries/la_pampa_corridor.geojson` | **The AOI that gets scored.** Any EPSG:4326 polygon GeoJSON. Determines the tile set, hence the entire chip universe. | Scoring a different area. Use a separate `AMW_OUT_ROOT` — chip IDs won't overlap. |
+| `AMW_MODEL` | the v4.10b ensemble `.h5` | The classifier. Recorded in the panel as `model` + `model_sha256`. | Comparing model versions. |
 | `AMW_LIMIT_TILES` | unset | Use only the first *N* tiles of the AOI. Not a random sample — first in DLTile iteration order. | Smoke tests only. |
 | `AMW_COOLDOWN` | `600` | **Minimum** idle seconds between periods. | Rarely. |
 | `AMW_COOLDOWN_PCT` | `75` | Rest for this % of the period's own runtime, whichever is larger. 28 min of work → 21 min rest. | `100` for 1:1 work:rest; `40` if it runs cool. |

@@ -113,6 +113,28 @@ def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
     Mixed ``clear_threshold`` is fatal: it changes the composite the CNN saw, so the
     probabilities are not comparable. Everything else warns loudly.
     """
+    # ---- HARD GUARD: the panel must be a panel ---------------------------------
+    # One row per chip per period, by construction. A duplicate (chip_id, period) means
+    # the same ground entered the dataset twice and every count, share and mean built on
+    # it is silently inflated. The realistic cause is pooling two AOIs that overlap:
+    # DLTile keys are a GLOBAL UTM grid, so shared ground yields identical tile_keys,
+    # hence identical chip_ids, hence exact duplicate rows — verified 2026-08-07,
+    # la_pampa_corridor is 100% inside madre_de_dios_mining_aoi.
+    # This is fatal, never a warning: a silently doubled score is worse than no result.
+    dup = df.duplicated(subset=["chip_id", "period"], keep=False)
+    if dup.any():
+        n = int(dup.sum())
+        offenders = df.loc[dup, "chip_id"].head(3).tolist()
+        regions = (sorted(df.loc[dup, "region"].dropna().unique())
+                   if "region" in df.columns else ["<no region column: schema v1>"])
+        sys.exit(
+            f"FATAL: {n} duplicated (chip_id, period) rows — this is not a balanced panel.\n"
+            f"  regions involved: {regions}\n"
+            f"  example chip_ids: {offenders}\n"
+            f"  Cause: overlapping AOIs share tile_keys (global DLTile grid), so chip_ids\n"
+            f"  collide and the same ground is counted twice. Split them into separate\n"
+            f"  --panels_dir, or score one AOI only.")
+
     if "schema_version" not in df.columns:
         log.warning(
             "Panels carry no provenance columns (schema v1, written before "
@@ -131,7 +153,8 @@ def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
             f"The cloud mask is applied before the median composite (gee.py:132), so the "
             f"probabilities are not comparable. Separate them into different --panels_dir.")
 
-    for col, label in (("model", "model file"),
+    for col, label in (("region", "AOI / region file"),
+                       ("model", "model file"),
                        ("model_sha256", "model weights"),
                        ("chip_size", "chip size"),
                        ("stride", "stride"),

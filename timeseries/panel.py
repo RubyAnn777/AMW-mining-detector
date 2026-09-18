@@ -263,6 +263,10 @@ def build_period_panel(
     # couple of hundred bytes each — measured negligible against the 1.7 MB baseline.
     prov = {
         "schema_version": PANEL_SCHEMA_VERSION,
+        # The AOI defines the whole chip universe. Without it, panels built over different
+        # regions pool with no warning — chip_ids simply don't overlap, which looks like an
+        # unbalanced panel rather than an error.
+        "region": Path(region_path).name,
         "model": Path(model_path).name,
         "model_sha256": _file_sha256(Path(model_path)),
         "ensemble_members": _member_names(engine),
@@ -310,6 +314,23 @@ def build_period_panel(
                 log.error("[%s] tile %s failed (pixels=%s cov=%s)", spec.label,
                           tile.key, pixels is not None, cov is not None)
                 continue
+
+            # Axis-order guard (OPTIMIZATIONS.md P2). Two conventions meet here:
+            #   (H, W, B) numpy/TF — what every line below assumes
+            #   (B, H, W) rasterio  — what the cache GeoTIFFs store
+            # gee.load_tile and coverage._load transpose back, but nothing asserts it. A
+            # transposed array does NOT raise: ensure_tile_shape would read height=13,
+            # reflect-pad to 576x576 and return plausible garbage. Cheap check, silent
+            # scientific error avoided.
+            n_bands = len(data_config.bands)
+            assert pixels.ndim == 3 and pixels.shape[-1] == n_bands, (
+                f"imagery for {tile.key} is {pixels.shape}, expected (H, W, {n_bands}) — "
+                "axis order wrong or cache file corrupt")
+            assert cov.ndim == 3 and cov.shape[-1] == 2, (
+                f"coverage for {tile.key} is {cov.shape}, expected (H, W, 2)")
+            assert pixels.shape[:2] == cov.shape[:2], (
+                f"imagery {pixels.shape[:2]} and coverage {cov.shape[:2]} disagree on grid "
+                f"for {tile.key} — chip_coverage_stats would read the wrong window")
 
             t1 = time.perf_counter()
             # normalization identical to InferenceEngine.predict_on_tile_pixels

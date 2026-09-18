@@ -504,7 +504,69 @@ fork-touched file, twelve provenance columns in every panel row, and
   in the pipeline to its source, and records that only `t_main = 0.43` has any stated
   derivation — a fact not documented anywhere upstream.
 
-### 0.5.7 What is emphatically NOT fork work
+### 0.5.7 Subregions: why AMW can overlap safely and the panel cannot
+
+This is the sharpest example of "same detector, different record", and it decides how the
+basin run has to be built.
+
+**How `chip_id` is actually constructed.** `panel.py` writes `chip_id = f"{tile.key}:c{i}"`.
+The index `i` comes from `core/tile_utils.py:150 cut_chips(pixels, bbox, chip_size, stride, crs)`
+— note the signature: **the AOI is not a parameter.** The loop is
+
+```python
+for col in range(0, W - chip_size + stride, stride):
+    for row in range(0, H - chip_size + stride, stride):
+```
+
+so `i` depends only on `W`, `H` (always 576 = 552 + 2×12, from `DataConfig`), `chip_size`
+and `stride` (48/24, from the model). `bbox` is `tile.geometry.bounds`, fixed by the global
+DLTile grid. **The tile is its own coordinate frame.** The AOI polygon only selects *which*
+tiles come back; it never influences how a tile is chipped.
+
+Verified across two independent runs hours apart (`m2025-01` vs `q2025Q3` — different
+fetches, different composites): all **42,320** shared chip_ids map to identical `(row, col)`
+and byte-identical geometry, max bounds difference `0`.
+
+A natural worry is that chip `c37` might sit in the east of the tile in one region's run and
+the west in another's. It cannot: nothing region-dependent enters the calculation.
+
+**This stability is what makes the problem tractable.** Because identical `chip_id` means
+identical ground, deduplication is an exact key join — `drop_duplicates(subset=["chip_id",
+"period"])`, no geometry matching, no distance tolerance. Had the index been
+region-dependent, merging AOIs would have required fuzzy spatial matching. The recipe is
+`OPTIMIZATIONS.md` P1b. What is fatal is *failing to dedup*, not the collision itself.
+
+**AMW subdivides the basin into six regions** — `data/boundaries/amazon_basin/amazon_1…6.geojson`,
+each scored separately (`inference_pipeline.py:52` passes `region_path.stem` as the output
+name). **They were careful:** measured sum of the six areas 548.0044 deg², union 548.0044
+deg² — **0.000 % polygon overlap.** Someone partitioned rather than tiled loosely.
+
+**And it still would not have mattered if they hadn't been.** `DLTile.iter_from_shape`
+returns every tile *intersecting* the shape, so polygon-disjoint regions still share every
+tile straddling their common border. Measured on La Pampa: **32 of 80 tiles are not fully
+inside the AOI polygon**, and the tile footprints cover 130.4 % of the polygon's area.
+AMW's six regions therefore share tiles along all five internal borders.
+
+That is harmless for AMW because of what their output *is*:
+`core/postprocess.py dissolve_patches` buffers, unions, explodes, and aggregates confidence
+as a **mean**. Union is idempotent — feeding the same detection twice changes nothing. Their
+product is a map of polygons, and a polygon drawn twice is the same polygon.
+
+For the panel it is fatal. One row per chip per period is the entire contract; a duplicate
+row is a duplicate *observation*, and every count, share, mean and κ inflates silently.
+Nothing looks wrong — the probabilities are identical, so the data appears perfectly
+consistent.
+
+**Consequences for the basin run** (see `OPTIMIZATIONS.md` P1/P1a):
+
+1. Deduplicate at the **tile** level, not the polygon level. Polygon disjointness buys
+   nothing. Assign each tile to exactly one region deterministically — centroid containment
+   is the obvious rule — or pool and drop duplicate `(chip_id, period)` pairs.
+2. `analysis.py _check_provenance` exits **fatally** on any duplicate. That is the backstop,
+   not the design.
+3. The `region` provenance column makes the cause diagnosable after the fact.
+
+### 0.5.8 What is emphatically NOT fork work
 
 The detector itself. The CNN ensemble, its training data, its architecture, the six member
 models, the composite construction, the tiling geometry, the chipping, the dual-threshold
