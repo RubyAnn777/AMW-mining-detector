@@ -94,7 +94,7 @@ ANDES_RAW_TAG = "0.20"
 # >> LOOSE: keep a chip if confidence >= 0.43, or >= 0.75 if it is 'isolated'.
 # >> This is the recommended product and the set SAM2 is prompted from.
 LOOSE = (0.43, 0.75)
-# >> STRINGENT: 0.55 main / 0.8 isolated; used for the provisional layer.
+# >> STRINGENT: 0.55 main / 0.8 isolated; used for the provisional layer. for newer detections that cannot be double checked against the follwoing year
 STRINGENT = (0.55, 0.8)
 
 #: Isolation rule shared by both: k-th nearest neighbour within this distance.
