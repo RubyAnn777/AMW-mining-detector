@@ -1,5 +1,9 @@
 # PROVENANCE: FORK-MODIFIED — upstream file modified in this fork (comments/docstrings only); upstream original: earthrise-media/mining-detector
 
+# >> FILE OVERVIEW
+# >> Standalone CLI: merge touching chip squares in a detection file into polygons.
+# >> Not called by scripts/pipeline.py (production dissolves via
+# >> postprocess.dissolve_patches inside persistence.py). Upstream file, fork comments.
 import argparse
 import sys
 from pathlib import Path
@@ -9,6 +13,10 @@ import geopandas as gpd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from postprocess import PostprocessConfig  # noqa: E402
 
+# >> Buffered dissolve of one GeoJSON: optional score filter, grow, union, shrink.
+# >> Writes <input>-dissolved[-<threshold>].geojson beside the input at 6 decimals.
+# >> Gotcha: output has no CRS and no confidence column (unlike dissolve_patches).
+# >> Gotcha: path.split('.geojson') cuts at the FIRST '.geojson' in the whole path.
 def dissolve(path, threshold, column, buffer_width):
     """Merge adjacent patch-wise mine detections into polygons.
 
@@ -50,6 +58,7 @@ def dissolve(path, threshold, column, buffer_width):
     # (join_style=2 = mitred corners, keeps squares square), then
     # unary_union merges the whole layer into one (Multi)Polygon.
     # (unary_union is the legacy name for what union_all() does now.)
+    # >> Buffer width 1e-5 in the file's CRS units = DEGREES for EPSG:4326 (~1.1 m).
     dissolved = df.geometry.buffer(buffer_width, join_style=2).unary_union
     # Step 3: wrap in a one-row frame, explode the MultiPolygon into one row
     # per connected component; reset_index gives a clean 0..N-1 RangeIndex.
@@ -65,6 +74,7 @@ def dissolve(path, threshold, column, buffer_width):
     outpath = base + suffix + '.geojson'
     # Pinned so precision does not float with the GDAL/pyogrio version; see
     # core/postprocess.py and docs/design/persistence-planning.md.
+    # >> File write: dissolved polygons, GeoJSON, 6 decimals.
     df.to_file(outpath, driver="GeoJSON", COORDINATE_PRECISION=PostprocessConfig.coordinate_precision)
 
 if __name__ == '__main__':

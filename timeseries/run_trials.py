@@ -24,6 +24,12 @@ Outputs land under data/timeseries/:
     detections/detections_*.geojson                           (positives, for QGIS)
     runlog_<timestamp>.log
 """
+# >> FILE OVERVIEW: fork-original (not in upstream). Entry point for the time-series
+# >> panels.
+# >> Builds the list of month / quarter windows for one year and calls
+# >> panel.py:build_period_panel for each, skipping any already done (resume-safe).
+# >> Usually launched once per period by run_staged.sh (--months <label>).
+# >> Outputs feed analysis.py.
 from __future__ import annotations
 
 import argparse
@@ -36,30 +42,48 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 # paths: make upstream core/ and this folder importable regardless of cwd     #
 # --------------------------------------------------------------------------- #
+# >> Repo root; core/ goes on sys.path so upstream modules import by bare name (import
+# >> gee).
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "core"))       # upstream modules (gee, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # coverage, panel
 
+# >> ORDER MATTERS: the thread caps must be set before TensorFlow is imported (below).
 # CPU thread caps MUST be applied before TensorFlow/numpy are imported, i.e. before
 # `import panel` pulls in inference_engine -> tensorflow. See resource_limits.py and
 # docs/RUN2_SETUP_AND_AUDIT.md §3. Budget: AMW_THREADS env var, default 4, 0 = uncapped.
 from resource_limits import apply_resource_limits, describe  # noqa: E402
 
+# >> Sets OMP/BLAS env vars and TF/torch thread pools (AMW_THREADS, default 4).
+# >> Gotcha: logging is not configured yet (basicConfig is in main), so its INFO lines are
+# >> dropped; main logs describe() later to record the caps.
 apply_resource_limits()
 
+# >> This import pulls in TensorFlow (via inference_engine), hence it comes after the
+# >> caps.
 from panel import PeriodSpec, build_period_panel  # noqa: E402
 
 
+# >> What: the 12 calendar-month windows of a year.
+# >> Out: list of PeriodSpec, labels 'm2025-01'..'m2025-12', cadence 'monthly'.
+# >> End date EXCLUSIVE: Jan = 2025-01-01 -> 2025-02-01; Dec ends 2026-01-01. So the last
+# >> day is included, unlike upstream periods.py, whose 03-31 / 12-31 end dates drop that
+# >> day.
+# >> Used by main.
 def month_specs(year: int) -> list[PeriodSpec]:
     """12 monthly windows; end date exclusive (ee.filterDate convention)."""
     specs = []
     for m in range(1, 13):
         start = f"{year}-{m:02d}-01"
+        # >> December rolls over to 1 January of the next year.
         end = f"{year + 1}-01-01" if m == 12 else f"{year}-{m + 1:02d}-01"
         specs.append(PeriodSpec(f"m{year}-{m:02d}", start, end, "monthly"))
     return specs
 
 
+# >> What: 4 quarter windows: Q1 Jan-Mar, Q2 Apr-Jun, Q3 Jul-Sep, Q4 Oct-Dec. (start
+# >> month, end month) pairs; 13 means "1 January of next year". End exclusive.
+# >> Out: labels 'q2025Q1'..'q2025Q4', cadence 'quarterly'. Used by main.
 def quarter_specs(year: int) -> list[PeriodSpec]:
     """4 quarterly windows: Q1 = Jan1..Apr1(excl), etc."""
     starts = [(1, 4), (4, 7), (7, 10), (10, 13)]
@@ -71,6 +95,11 @@ def quarter_specs(year: int) -> list[PeriodSpec]:
     return specs
 
 
+# >> What: command-line entry; runs each selected period, logs, returns an exit code.
+# >> Defaults: La Pampa AOI, the production 6-CNN ensemble, year 2025, out
+# >> data/timeseries.
+# >> Writes under out_root: panels/, tiles/, detections/ (via panel.py), runlog_<ts>.log.
+# >> Exit 0 = all done, 1 = some period failed, 2 = no periods selected.
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -82,9 +111,12 @@ def main() -> int:
     ap.add_argument("--out_root", type=Path, default=REPO_ROOT / "data/timeseries")
     ap.add_argument("--cache_dir", type=Path, default=None,
                     help="default: <out_root>/cache/<year>")
+    # >> Only the positives GeoJSON uses this; 0.4 = the basin inference floor used
+    # >> upstream.
     ap.add_argument("--threshold", type=float, default=0.4,
                     help="only affects the convenience detections geojson; the "
                          "panel always stores ALL probabilities")
+    # >> Parallel EE downloads per batch, and the batch size, in panel.py.
     ap.add_argument("--max_workers", type=int, default=8)
     ap.add_argument("--limit_tiles", type=int, default=None,
                     help="smoke-test: only the first N tiles")
@@ -96,11 +128,13 @@ def main() -> int:
                     help="rebuild panels even if the parquet exists")
     args = ap.parse_args()
 
+    # >> Cache default: <out_root>/cache/<year>; panels always go to <out_root>/panels.
     cache_dir = args.cache_dir or (args.out_root / "cache" / str(args.year))
     panels_dir = args.out_root / "panels"
     args.out_root.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # >> Log to the console and to FILE runlog_<YYYYmmdd_HHMMSS>.log in out_root.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -110,10 +144,14 @@ def main() -> int:
 
     # ------------------------------------------------------------- period list
     specs: list[PeriodSpec] = []
+    # >> Processing order: the 12 months first, then the 4 quarters.
     if not args.no_monthly:
         specs += month_specs(args.year)
     if not args.no_quarterly:
         specs += quarter_specs(args.year)
+    # >> --months filter: 'm2025-07' matches '2025-07' (leading m stripped); quarters
+    # >> match only by full label, e.g. 'q2025Q1'. So '--months 2025-07' alone drops all
+    # >> quarters.
     if args.months:
         wanted = {s.strip() for s in args.months.split(",")}
         specs = [s for s in specs
@@ -129,13 +167,18 @@ def main() -> int:
 
     # ------------------------------------------------------------------- run
     failures = []
+    # >> Serial loop over periods: one period fully finishes before the next starts.
     for spec in specs:
         panel_path = panels_dir / f"panel_{spec.label}.parquet"
+        # >> Resume-safe skip: an existing parquet means done (it is only written at
+        # >> period end).
         if panel_path.exists() and not args.force:
             log.info("[%s] panel exists, skipping (resume mode)", spec.label)
             continue
         t0 = time.perf_counter()
         try:
+            # >> Heavy work: fetch + score + write this period
+            # >> (panel.py:build_period_panel).
             build_period_panel(
                 spec, region_path=args.region, model_path=args.model,
                 out_dir=panels_dir, cache_dir=cache_dir,
@@ -149,6 +192,7 @@ def main() -> int:
                           (time.perf_counter() - t0) / 60)
             failures.append(spec.label)
 
+    # >> Non-zero exit tells run_staged.sh this period FAILED.
     if failures:
         log.error("Done with FAILURES: %s (rerun me — resume mode will retry "
                   "only these)", failures)

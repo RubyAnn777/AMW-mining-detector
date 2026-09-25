@@ -1,5 +1,12 @@
 """Tile inference: foundation-model embeddings, Keras probe, optional SAM2."""
 
+# >> FILE OVERVIEW
+# >> The heart of the project: turns satellite pixels into mining detections.
+# >> Pipeline position: after tile creation + Earth Engine download (gee.py), before
+# >> postprocess / persistence. InferenceEngine scores 48 px chips with a Keras CNN
+# >> ensemble; SAM2_Masker turns detections into pixel masks (a separate pass).
+# >> Upstream file (Amazon Mining Watch), byte-identical; the module docstring's
+# >> 'foundation-model embeddings' describes unused paths - production = CNN on pixels.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +39,7 @@ import rasterio.features
 import scipy.ndimage as ndi
 import tensorflow as tf
 
+# >> Small macOS compatibility shim for TensorFlow; runs once at import time.
 try:
     from .tf_darwin import apply_darwin_tf_compat
 except ImportError:
@@ -39,16 +47,19 @@ except ImportError:
 
 apply_darwin_tf_compat()
 
+# >> PyTorch is used only by SAM2 and the (unused) ViT embedding paths.
 import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 from shapely.geometry import box
 
+# >> Sibling modules in core/: chip cutting, SAM2 logit smoothing, postprocess defaults.
 from tile_utils import CenteredTile, cut_chips, create_tiles, ensure_tile_shape
 from sam2_logits import (DEFAULT_LOGIT_CLAMP, DEFAULT_SMOOTHING_SIGMA,
                          smooth_logits)
 from postprocess import PostprocessConfig
 
+# >> Cache helpers for the dense-embedding path (not used in production).
 from dense_embedding_cache import (
     DenseCachePaths,
     build_patch_cell_geometries,
@@ -62,11 +73,13 @@ from dense_embedding_cache import (
 if TYPE_CHECKING:
     from gee import DataConfig, GEE_Data_Extractor
 
+# >> A tile is either a DLTile (UTM grid square) or a CenteredTile (tile_utils).
 TileType = Union[DLTile, CenteredTile]
 PathLike = Union[str, Path]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# >> SSL4EO ViT weights paths: NOT used in production and not present in the repo.
 # Frozen full-model pickle for ``embedding_strategy='cls_only'``
 # (:meth:`InferenceEngine._load_embed_model_frozen`).
 SSL4EO_PATH = str(
@@ -82,13 +95,17 @@ SSL4EO_CLS_PATCH_WEIGHTS_PATH = str(
     ).resolve()
 )
 
+# >> SAM2 code + weights folder, and default output folders under data/outputs/.
 SAM2_PATH = str((REPO_ROOT / "models/sam2").resolve())
 DEFAULT_MASK_DIR = str((REPO_ROOT / "data/outputs/sam2").resolve())
 DEFAULT_INFERENCE_OUTPUT_BASE = str((REPO_ROOT / "data/outputs").resolve())
 
+# >> SAM2.1 'Hiera-Small' architecture config (a Hydra config name, not a file path).
 DEFAULT_SAM2_HYDRA_CONFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
 
+# >> Picks default SSL4EO ViT weight file for the embedding strategies.
+# >> Not used in production (embedding_strategy='none' never calls it).
 def resolve_default_embed_model_path(
     embed_model_name: Optional[str],
     embedding_strategy: Literal["cls_only", "cls_patch"],
@@ -110,19 +127,29 @@ def resolve_default_embed_model_path(
     return SSL4EO_CLS_PATCH_WEIGHTS_PATH
 
 
+# >> Reads cached ViT embeddings (columns cls0..clsN) into an (N, dim) float32 matrix.
+# >> Not used in production (cls_only path).
 def _cls_only_parquet_embedding_matrix(gdf: gpd.GeoDataFrame) -> np.ndarray:
     """Rows of ``*_embeddings.parquet`` as float32; ``dim`` = count of ``cls{n}`` columns."""
     dim = sum(1 for c in gdf.columns if c.startswith("cls") and c[3:].isdigit())
     return gdf[cls_column_names(dim)].to_numpy(dtype=np.float32)
 
 
+# >> Settings for the detection (scoring) run. Built by inference_pipeline.py from CLI.
+# >> Production values come from scripts/pipeline.py: --pred_threshold 0.4 (basin) or
+# >> 0.2 (Andes), --tries 3; model = models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5.
+# >> The dataclass decorator auto-writes __init__ from the typed fields below.
 @dataclass
 class InferenceConfig:
     # Path to Keras classifier (.h5). Optional for embedding-only runs; required
     # for ``bulk_predict``, ``predict_on_tile*`` classification, and
     # ``embedding_strategy='none'`` pixel inference.
+    # >> Keras .h5 model file (the 6-member CNN ensemble). Required for bulk_predict.
     model_path: Optional[PathLike] = None
+    # >> Keep a chip if its ensemble probability is > this (0..1). Default 0.5; production
+    # >> overrides to 0.4 (basin) / 0.2 (Andes). Also appears in the output filename.
     pred_threshold: float = 0.5
+    # >> Foundation-model (ViT) settings: not used in production.
     embed_model_name: Optional[str] = "ssl4eo_vit_s16"
     #: If ``None``, resolved from :func:`resolve_default_embed_model_path` for
     #: ``ssl4eo_vit_s16``; must be set explicitly for other foundation models.
@@ -130,28 +157,39 @@ class InferenceConfig:
     # The next 3 parameters are required if using an embedding model
     embed_model_chip_size: Optional[int] = 224
     embedding_batch_size: Optional[int] = 32
+    # >> Chip edge in pixels (48 px x 10 m = 480 m). Used by the CNN path too.
     geo_chip_size: Optional[int] = 48
     #: ``cls_only``: frozen FM + :meth:`InferenceEngine.embed` + legacy
     #: ``*_embeddings.parquet``. ``cls_patch``: ViT + :meth:`InferenceEngine.embed_dense`
     #: + ``*_embed_dense_{cls,patch}.parquet`` pair. ``none``: Keras classifier only on
     #: pixel chips (no FM, no embedding cache reads). No cross-format cache fallback.
+    # >> 'none' = production: CNN on raw pixel chips. cls_only/cls_patch are unused.
     embedding_strategy: Literal["cls_only", "cls_patch", "none"] = "none"
+    # >> Folder for cached embeddings (unused in production; None disables).
     embeddings_cache_dir: Optional[PathLike] = None
+    # >> True = run SAM2 inline on detected tiles. Production leaves it False and runs
+    # >> SAM2 separately via sam2_mask.py -> SAM2_Masker.bulk_mask_polygons.
     run_sam2: bool = False
     # Base directory for prediction GeoJSONs; subfolder per model version at runtime.
     inference_output_base: PathLike = DEFAULT_INFERENCE_OUTPUT_BASE
     # GeoJSON coordinate precision for detection outputs. Defaults from
     # PostprocessConfig so producer and consumer cannot drift; see there for
     # why 6, and why it requires a uniform archive.
+    # >> Decimal places in output GeoJSON coordinates = 6 (about 0.1 m).
     coordinate_precision: int = PostprocessConfig.coordinate_precision
+    # >> stride = chip_size // 2 = 24 px, so chips overlap by half (23x23=529 per tile).
     stride_ratio: int = 2  # stride is computed as chip_size // stride_ratio.
+    # >> Number of retry rounds for failed tiles (default 2; production passes 3).
     tries: int = 2
+    # >> Tiles per producer/consumer batch; GeoJSON is rewritten after each batch.
     max_concurrent_tiles: int = 500
 
+    # >> Runs after __init__: normalises paths and validates the embedding options.
     def __post_init__(self):
         if self.model_path is not None:
             self.model_path = Path(self.model_path)
 
+        # >> Production case: no foundation model, so no weights path.
         if self.embedding_strategy == "none":
             self.embed_model_path = ""
         elif self.embed_model_path is None:
@@ -163,12 +201,14 @@ class InferenceConfig:
 
         self._validate_embedding_config()
 
+        # >> Creates the embedding cache folder if one was given (unused in production).
         if self.embeddings_cache_dir:
             self.embeddings_cache_dir = Path(self.embeddings_cache_dir)
             self.embeddings_cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.inference_output_base = Path(self.inference_output_base)
 
+    # >> Checks settings needed by the ViT paths; returns immediately for 'none'.
     def _validate_embedding_config(self):
         if self.embedding_strategy == "none":
             return
@@ -200,11 +240,18 @@ class InferenceConfig:
                     f"embed_model_chip_size={self.embed_model_chip_size}."
                 )
 
+# >> Settings for SAM2 mask making. Used by SAM2_Masker; built by sam2_mask.py.
+# >> SAM2 (Segment Anything Model 2) outlines objects inside a box you give it.
+# >> logit = log-odds score; > 0 means 'more likely mine than not', 0 = 50/50.
 @dataclass
 class MaskConfig:
+    # >> Distance scale (pixels) of the soft prior: penalty = -(distance_px / 12)^2
+    # >> outside detected chips. Called 'sigma' but it is a quadratic scale, not a
+    # >> Gaussian sigma.
     prior_sigma: float = 12.0   # spatial prior sigma (pixels)
     # Defaults live in sam2_logits so that consumers replaying the smoothing
     # on saved logits cannot drift from what produced them.
+    # >> Gaussian blur sigma = 2.5 px, applied after upsampling (sam2_logits default).
     smoothing_sigma: float = DEFAULT_SMOOTHING_SIGMA  # after upsampling (px)
     # Saturation limit for the persisted logits, in log-odds. The spatial prior
     # is an unbounded quadratic penalty, so log_odds runs to about -862 in
@@ -221,8 +268,11 @@ class MaskConfig:
     # tile (0 differing pixels); at +/-8 it is not (23 px, IoU 0.9987).
     # +/-16 log-odds is a probability of 1 - 1.1e-7, far outside any threshold
     # a t_prov,mask sweep would explore.
+    # >> Stored logits are clamped to +/-16 log-odds (see long note above).
     logit_clamp: float = DEFAULT_LOGIT_CLAMP
 
+    # >> Default files: base checkpoint sam2.1_hiera_small.pt + fine-tuned
+    # >> SAM_model_96_px_final.pth, both in models/sam2/. Output dir data/outputs/sam2.
     sam2_repo_path: PathLike = SAM2_PATH
     sam2_checkpoint: Optional[PathLike] = None
     finetuned_weights: Optional[PathLike] = None
@@ -230,6 +280,7 @@ class MaskConfig:
     sam2_model_cfg: Optional[PathLike] = None
     mask_dir: PathLike = DEFAULT_MASK_DIR
 
+    # >> Fills in default paths (as strings) and creates the output folder.
     def __post_init__(self):
         sam2_repo = Path(self.sam2_repo_path)
         self.sam2_repo_path = str(sam2_repo)
@@ -250,6 +301,7 @@ class MaskConfig:
         self.mask_dir = Path(self.mask_dir)
         self.mask_dir.mkdir(parents=True, exist_ok=True)
 
+    # >> Settings written to mask_config.txt so later readers know how logits were made.
     #: Fields that determine how to read a ``-logits.tif``. Recorded per run
     #: because they are irreversible: smoothing, the clamp and the spatial prior
     #: are all baked into the stored field and none can be undone from the file.
@@ -257,6 +309,8 @@ class MaskConfig:
         "prior_sigma", "smoothing_sigma", "logit_clamp",
         "sam2_checkpoint", "finetuned_weights", "sam2_model_cfg")
 
+    # >> Writes <mask_dir>/mask_config.txt: one 'field = value' line per provenance field.
+    # >> Called from SAM2_Masker.__init__. (Docstring repeats one sentence - harmless.)
     def write_config(self, name: str = "mask_config.txt") -> Path:
         """Record the mask configuration beside the tiles it produced.
 
@@ -269,9 +323,12 @@ class MaskConfig:
         path = Path(self.mask_dir) / name
         lines = ["logits_stored = clip(smooth(upsampled_log_odds), +/-clamp)"]
         lines += [f"{f} = {getattr(self, f)}" for f in self.PROVENANCE_FIELDS]
+        # >> FILE WRITE: plain-text mask_config.txt.
         path.write_text("\n".join(lines) + "\n")
         return path
 
+    # >> Turns a config file path into the Hydra name build_sam2 expects
+    # >> ('configs/sam2.1/...'); falls back to the Hiera-Small default.
     @staticmethod
     def _resolve_sam2_hydra_config(
         sam2_model_cfg: Optional[PathLike], sam2_repo: Path
@@ -291,6 +348,9 @@ class MaskConfig:
         # Already a Hydra package-relative name (or user override to experiment).
         return raw
 
+# >> Cuts a tile into non-overlapping square windows + their lat/lon boxes.
+# >> Input (H, W, C) -> output (n_h*n_w, win, win, C) and a GeoDataFrame in EPSG:4326.
+# >> Only used by the dense ViT path (cls_patch): not used in production.
 def split_parent_pixels_to_embed_windows(
     pixels: np.ndarray,
     tile: TileType,
@@ -331,9 +391,14 @@ def split_parent_pixels_to_embed_windows(
     return stacked, gdf
 
 
+# >> Main scoring engine. Built by inference_pipeline.py; bulk_predict is the entry point.
+# >> Holds the Earth Engine extractor, the Keras ensemble, the TF lock and (optionally)
+# >> a SAM2_Masker.
 class InferenceEngine:
     """Handles tile inference, retries, and aggregation."""
 
+    # >> Inputs: start/end dates (end is exclusive in Earth Engine), DataConfig (tiles,
+    # >> bands, workers), InferenceConfig, optional MaskConfig and logger.
     def __init__(
         self,
         start_date: str,
@@ -345,19 +410,28 @@ class InferenceEngine:
     ):
         from gee import GEE_Data_Extractor
 
+        # >> Earth Engine downloader for this date window (gee.py: GEE_Data_Extractor).
         self.data_extractor = GEE_Data_Extractor(
             start_date, end_date, data_config)
         self.config = config
         self.logger = logger or logging.getLogger()
 
+        # >> MODEL LOADING: Keras reads the .h5 ensemble; compile=False = inference only,
+        # >> no training settings. Input (N, 48, 48, 13) -> output (N, 6), one column per
+        # >> member.
         self.model = None
         if config.model_path:
             self.model = tf.keras.models.load_model(
                 str(config.model_path), compile=False)
 
+        # >> TF LOCK: only one thread may call the Keras model at a time (see
+        # >> _model_infer).
         # Add a lock to serialize model access (in-process)
         self._tf_model_lock = threading.Lock()
         
+        # >> DEVICE SELECTION for PyTorch: NVIDIA GPU (cuda), else Apple GPU (mps), else
+        # >> CPU. Only matters for the unused ViT paths; the Keras model picks its own
+        # >> device.
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         elif torch.backends.mps.is_available():
@@ -365,6 +439,8 @@ class InferenceEngine:
         else:
             self.device = torch.device("cpu")
 
+        # >> Load a ViT embedding model only for cls_patch/cls_only (not used in
+        # >> production).
         if config.embed_model_path:
             if config.embedding_strategy == "cls_patch":
                 self.embed_model = self._load_embed_model()
@@ -375,6 +451,7 @@ class InferenceEngine:
         else:
             self.embed_model = None
 
+        # >> Optional inline SAM2; production runs SAM2 separately, so masker = None.
         if self.config.run_sam2:
             if not mask_config:
                 mask_config = MaskConfig()
@@ -382,6 +459,7 @@ class InferenceEngine:
         else:
             self.masker = None
 
+    # >> Guard: raises a clear error if no Keras model was loaded.
     def _ensure_keras_model(self) -> None:
         """Raise if the Keras classifier was not loaded (``model_path`` unset)."""
         if self.model is None:
@@ -391,6 +469,11 @@ class InferenceEngine:
                 "Embedding-only use (embed / embed_dense) does not require it."
             )
 
+    # >> Builds the raw-detections GeoJSON path. Pattern:
+    # >> <inference_output_base>/<model_version>/
+    # >>   <region>_<model_version>_<threshold:.2f>_<start>_<end>.geojson
+    # >> e.g. <region>_48px_v4.10b-..._0.40_2024-01-01_2025-01-01.geojson
+    # >> Called by bulk_predict. Creates the folder if needed.
     def predictions_geojson_path(self, region_name: str) -> Path:
         """Path for bulk-inference positive-chip GeoJSON under ``inference_output_base``.
 
@@ -406,6 +489,7 @@ class InferenceEngine:
                 "InferenceConfig.model_path must be set to build output path"
             )
         mp = Path(self.config.model_path)
+        # >> model_version = first two '_'-separated parts of the .h5 filename stem.
         model_version = "_".join(mp.stem.split("_")[:2])
         period = f"{self.data_extractor.start_date}_{self.data_extractor.end_date}"
         outdir = self.config.inference_output_base / model_version
@@ -415,6 +499,7 @@ class InferenceEngine:
             f"{region_name}_{model_version}_{pred:.2f}_{period}.geojson"
         )
 
+    # >> Loads a pickled full ViT model (cls_only). Not used in production.
     def _load_embed_model_frozen(self):
         if self.config.embed_model_name == "ssl4eo_vit_s16":
             embed_model = torch.load(self.config.embed_model_path,
@@ -427,6 +512,8 @@ class InferenceEngine:
         embed_model.eval()
         return embed_model
 
+    # >> Builds a 13-band ViT-Small/16 and loads SSL4EO weights (cls_patch).
+    # >> Not used in production; the weights file is not in the repo.
     def _load_embed_model(self):
         if self.config.embed_model_name == "ssl4eo_vit_s16":
             import sys
@@ -450,6 +537,7 @@ class InferenceEngine:
         embed_model.eval()
         return embed_model
 
+    # >> Cache path for cls_only embeddings (unused in production).
     def _make_embedding_cache_path(self, tile: TileType) -> Optional[Path]:
         """Return Path to an embedding cache file; None if disabled."""
         emb_cache_dir = getattr(self.config, "embeddings_cache_dir", None)
@@ -462,6 +550,7 @@ class InferenceEngine:
         emb_name = f"{collection}_{tile.key}_{start}_{end}_embeddings.parquet"
         return emb_cache_dir / emb_name
 
+    # >> Cache paths for cls_patch embeddings (unused in production).
     def _make_dense_embedding_cache_paths(
         self, tile: TileType
     ) -> Optional[DenseCachePaths]:
@@ -477,6 +566,8 @@ class InferenceEngine:
             emb_cache_dir, collection, tile.key, start, end
         )
 
+    # >> Runs the ViT on chips to get one feature vector per chip, with parquet cache.
+    # >> NOT USED IN PRODUCTION (embedding_strategy='cls_only' only).
     def embed(
         self,
         chips: np.ndarray,
@@ -551,6 +642,8 @@ class InferenceEngine:
 
         return embeddings
 
+    # >> ViT embeddings per window: global 'cls' vector + a grid of patch vectors.
+    # >> NOT USED IN PRODUCTION (embedding_strategy='cls_patch' only).
     def embed_dense(
         self,
         chips: np.ndarray,  # (N, H, W, C) typically square H=W=embed_model_chip_size
@@ -647,6 +740,8 @@ class InferenceEngine:
 
         return out
 
+    # >> CHIP PARAMETERS: returns (chip_size, stride) in pixels.
+    # >> Production: geo_chip_size=48 -> (48, 24). If unset, reads the model's input size.
     def _resolve_chip_params(self):
         """Return (chip_size, stride) based on model/config."""
         if self.config.geo_chip_size is None:
@@ -657,28 +752,43 @@ class InferenceEngine:
             chip_size = input_shape[1]
         else:
             chip_size = self.config.geo_chip_size
+        # >> stride = 48 // 2 = 24 px; 576 px tile -> (576-48)/24 + 1 = 23 chips per side.
         stride = chip_size // self.config.stride_ratio
         return chip_size, stride
 
+    # >> Runs the Keras ensemble on a batch of chips, under the TF lock.
+    # >> x: (529, 48, 48, 13) float32 in 0..1 -> returns (529, 6) float32 probabilities.
+    # >> Why the lock: Keras models are not safe to call from several threads at once.
     def _model_infer(self, x):
         """Thread-safe wrapper around model.predict for inference."""
         self._ensure_keras_model()
         with self._tf_model_lock:
             return self.model.predict(x, verbose=0)
 
+    # >> Collapses model output to one probability per chip, float64, shape (N,).
+    # >> ENSEMBLE = several independently trained models voting; here 6 CNNs whose
+    # >> outputs sit side by side, shape (N, 6). Each is a sigmoid output: a squash of a
+    # >> raw score into 0..1, read as 'probability this chip shows mining'.
     @staticmethod
     def _probs_from_predictions(preds: np.ndarray) -> np.ndarray:
         """Positive-class probability per row (matches :meth:`_preds_to_gdf`)."""
+        # >> (N, 1): single model -> take the column.
         if preds.ndim == 2:
             if preds.shape[1] == 1:
                 # Use [:, 0] not squeeze(): for batch size 1, squeeze() becomes 0-d
                 # and mean_preds[idx] raises "too many indices for array".
                 return np.asarray(preds[:, 0], dtype=np.float64)
+            # >> (N, 2): two-class softmax -> take the 'positive' column.
             if preds.shape[1] == 2:
                 return np.asarray(preds[:, 1], dtype=np.float64)
+            # >> (N, 6) PRODUCTION: ensemble mean over axis 1 -> (N,). This is
+            # >> 'confidence'.
             return np.asarray(np.mean(preds, axis=1), dtype=np.float64)
         return np.asarray(np.atleast_1d(preds), dtype=np.float64)
 
+    # >> THRESHOLDING: keeps chips with mean probability > pred_threshold and returns them
+    # >> as a GeoDataFrame (chip square polygons, EPSG:4326) with column 'confidence'.
+    # >> Also a 'preds' column: the 6 member scores as a string, e.g. '[0.51, 0.62, ...]'.
     def _preds_to_gdf(
         self,
         preds: np.ndarray,
@@ -689,17 +799,20 @@ class InferenceEngine:
         """Convert model preds -> preds_gdf (optionally with dense grid metadata)."""
         mean_preds = self._probs_from_predictions(preds)
 
+        # >> Indices of chips above the threshold (strictly greater than, e.g. > 0.4).
         idx = np.where(mean_preds > self.config.pred_threshold)[0]
         if len(idx) == 0:
             return gpd.GeoDataFrame(
                 columns=["geometry", "confidence"], crs="EPSG:4326")
 
         preds_gdf = gpd.GeoDataFrame(
+            # >> Pick the matching chip polygons (assumes chip_geoms has a 0..N-1 index).
             geometry=chip_geoms.loc[idx, "geometry"].reset_index(drop=True),
             crs="EPSG:4326",
         )
         preds_gdf["confidence"] = mean_preds[idx]
 
+        # >> Dense-path metadata columns (unused in production).
         if patch_grid_meta is not None:
             meta_take = patch_grid_meta.iloc[idx].reset_index(drop=True)
             for col in (
@@ -712,12 +825,14 @@ class InferenceEngine:
                 if col in meta_take.columns:
                     preds_gdf[col] = meta_take[col].values
 
+        # >> For the 6-member ensemble, keep per-member scores as a text column 'preds'.
         if preds.ndim == 2 and preds.shape[1] > 2:
             preds_gdf["preds"] = [str(list(v)) for v in preds[idx]]
 
         preds_gdf = preds_gdf.set_crs("epsg:4326", allow_override=True)
         return preds_gdf
 
+    # >> Makes sure an empty result still has a geometry column and CRS.
     def _ensure_gdf(self, df):
         """Ensure input is a GeoDataFrame with geometry column and CRS.
         
@@ -731,6 +846,10 @@ class InferenceEngine:
         else:
             raise ValueError(f"Expected a gdf, got {type(df)} length {len(df)}")
 
+    # >> PRODUCER work for one tile (runs in a worker thread): gets the input data.
+    # >> Production ('none'): skips caches and downloads pixels via gee.get_tile_data
+    # >> -> (576, 576, 13) reflectance x 10,000 (uses the on-disk image cache if set).
+    # >> Returns {'mode': 'pixels', 'pixels': ..., 'tile': ...} for the queue.
     def produce_tile_input(self, tile: TileType) -> Dict[str, Any]:
         """
         Producer work for a single tile:
@@ -748,6 +867,7 @@ class InferenceEngine:
         ``embeddings_cache_dir`` unset or avoid hitting the cache for tiles that
         need masks; use the standalone SAM2 scripts for a separate masking pass.
         """
+        # >> Embedding-cache branches below are not used in production.
         if self.config.embedding_strategy == "cls_patch":
             dense_paths = self._make_dense_embedding_cache_paths(tile)
             if dense_paths is not None:
@@ -790,9 +910,13 @@ class InferenceEngine:
                         f"Will fetch pixels."
                     )
 
+        # >> Network I/O (Earth Engine computePixels) or cache read - the slow part.
         pixels = self.data_extractor.get_tile_data(tile)
         return {"mode": "pixels", "pixels": pixels, "tile": tile}
 
+    # >> Scores one tile from its pixels (runs in the single consumer thread).
+    # >> Returns (detections GeoDataFrame, None) on success or (empty, tile) on failure,
+    # >> so the tile can be retried. Called by _consumer and predict_on_tile.
     def predict_on_tile_pixels(
         self,
         pixels: np.ndarray,
@@ -801,10 +925,12 @@ class InferenceEngine:
         Run the per-tile pipeline starting from pixels (I/O already done).
         This is intended to run inside the consumer (serialized for GPU use).
         """
+        # >> Dense ViT branch (not used in production).
         if self.config.embedding_strategy == "cls_patch":
             return self._predict_on_tile_pixels_dense(pixels, tile)
 
         chip_size, stride = self._resolve_chip_params()
+        # >> 576 = 552 core + 2 x 12 pad; 576 / 24 = 24, so this warning does not fire.
         tile_width = tile.tilesize + 2 * tile.pad
         if tile_width % stride != 0:
             self.logger.warning(
@@ -814,11 +940,17 @@ class InferenceEngine:
                 f"Inference may miss some pixels."
             )
 
+        # >> NORMALISATION: reflectance x 10,000 -> 0..1, clipped, float32. Shape
+        # >> (576,576,13). The CNN was trained on inputs scaled this way.
         normed = np.clip(pixels / 10000.0, 0, 1).astype(np.float32)
+        # >> Cut into overlapping 48 px chips, stride 24: (576,576,13) -> (529,48,48,13)
+        # >> plus 529 chip polygons in EPSG:4326. Order: outer loop columns, inner loop
+        # >> rows.
         chips, chip_geoms = cut_chips(
             normed, tile.geometry.bounds, chip_size, stride, crs='epsg:4326')
 
         try: 
+            # >> ViT path (not used in production).
             if self.embed_model is not None:
                 embeddings = self.embed(chips, chip_geoms, tile)
                 preds = self.predict_on_tile_embeddings(
@@ -826,19 +958,23 @@ class InferenceEngine:
                 preds_gdf, failed_tile = preds
                 if failed_tile is not None:
                     return gpd.GeoDataFrame(), failed_tile
+            # >> PRODUCTION PATH: CNN ensemble on raw chips, then threshold.
             else:
                 preds = self._model_infer(chips)
                 preds_gdf = self._preds_to_gdf(preds, chip_geoms)
 
+            # >> Inline SAM2 only if run_sam2=True (off in production). Uses raw pixels.
             if not preds_gdf.empty and self.masker:
                 self.masker.predict(pixels, tile, preds_gdf)
 
             return preds_gdf, None
 
+        # >> Any error -> log it and report the tile as failed (it will be retried).
         except Exception as e:
             self.logger.error(f"Error predicting for tile {tile.key}: {e}")
             return gpd.GeoDataFrame(), tile
 
+    # >> Dense ViT scoring of one tile. NOT USED IN PRODUCTION.
     def _predict_on_tile_pixels_dense(
         self,
         pixels: np.ndarray,
@@ -887,6 +1023,8 @@ class InferenceEngine:
             self.logger.error(f"Error in dense predict for tile {tile.key}: {e}")
             return gpd.GeoDataFrame(), tile
 
+    # >> Runs the classifier on embedding vectors instead of pixels.
+    # >> Only reached by the unused ViT/cache paths.
     def predict_on_tile_embeddings(
         self,
         embeddings: np.ndarray,
@@ -909,6 +1047,10 @@ class InferenceEngine:
                               f"{tile_key}: {e}")
             return gpd.GeoDataFrame(), tile
 
+    # >> CONSUMER thread: takes items off the queue one by one and scores them serially.
+    # >> Stops when it sees the sentinel (a unique 'end of batch' marker object).
+    # >> Successes go to nonlocal_predictions, failures to fails (both under 'lock').
+    # >> Always sets consumer_done (a threading.Event = a flag other threads can wait on).
     def _consumer(
         self, q: "queue.Queue[Dict[str, Any]]", sentinel: object,
         nonlocal_predictions: List[gpd.GeoDataFrame],
@@ -917,6 +1059,7 @@ class InferenceEngine:
         """Consume items from the queue, serially running inference."""
         try:
             while True:
+                # >> Blocks until a producer puts an item in the queue.
                 item = q.get()
                 if item is sentinel:
                     break
@@ -933,6 +1076,7 @@ class InferenceEngine:
                         tile_local,
                         patch_grid_meta=patch_grid_meta,
                     )
+                # >> Production case: pixels -> chips -> CNN -> thresholded detections.
                 elif mode == "pixels":
                     pixels = item["pixels"]
                     tile_local = item["tile"]
@@ -942,6 +1086,8 @@ class InferenceEngine:
                     preds = (gpd.GeoDataFrame(), item.get("tile"))
                 preds_gdf, failed_tile = preds
                 
+                # >> Lock protects the shared result lists (the main thread also appends
+                # >> to fails).
                 with lock:
                     if failed_tile is not None:
                         fails.append(failed_tile)
@@ -951,11 +1097,21 @@ class InferenceEngine:
                         
                 q.task_done()
 
+        # >> Gotcha: if this outer handler ever fires, the consumer stops reading;
+        # >> producers can then block on a full queue (maxsize 64). In practice per-tile
+        # >> errors are caught.
         except Exception as e:
             self.logger.error(f"Consumer error: {e}")
+        # >> Signal the main thread that this batch is fully scored.
         finally:
             consumer_done.set()
         
+    # >> MAIN ENTRY: scores every tile of a region and returns all detections.
+    # >> Producer/consumer design: 8 producer threads download tiles (network I/O, so
+    # >> threads, not processes) -> queue (max 64 items) -> 1 consumer thread runs the
+    # >> model. Tiles go in batches of 500; failed tiles are retried for 'tries' rounds.
+    # >> FILE WRITE: raw detections GeoJSON (6 decimals), rewritten after every batch.
+    # >> Called by inference_pipeline.py; output feeds postprocess.py.
     def bulk_predict(
         self,
         tiles: List[TileType],
@@ -982,6 +1138,7 @@ class InferenceEngine:
         self._ensure_keras_model()
         outpath = self.predictions_geojson_path(region_name)
 
+        # >> Empty result table in EPSG:4326 (lat/lon) with columns geometry + confidence.
         predictions = gpd.GeoDataFrame({
             "geometry": gpd.GeoSeries(dtype="geometry"),
             "confidence": gpd.pd.Series(dtype="float"),
@@ -989,24 +1146,36 @@ class InferenceEngine:
             crs="epsg:4326"
         )
         
+        # >> RETRIES: first round = all tiles; later rounds = only the tiles that failed.
         retry_tiles = tiles.copy()
         tries_remaining = self.config.tries
         max_concurrent_tiles = self.config.max_concurrent_tiles
+        # >> Producer thread count from DataConfig.max_workers (default 8).
         max_workers = self.data_extractor.config.max_workers
 
+        # >> Retry loop: stops when no tries remain or nothing failed.
         while tries_remaining and retry_tiles:
             self.logger.info(f"{tries_remaining} tries remaining.")
             fails: List[TileType] = []
 
+            # >> BATCHES of max_concurrent_tiles (500) tiles, in the given tile order.
             for i in tqdm(range(0, len(retry_tiles), max_concurrent_tiles)):
                 batch_tiles = retry_tiles[i : i + max_concurrent_tiles]
+                # >> QUEUE with maxsize=64: producers wait when 64 tiles are waiting,
+                # >> which caps memory (each queued item holds a full 576x576x13 pixel
+                # >> array).
                 q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=64)
+                # >> SENTINEL: a unique object meaning 'no more items in this batch'.
                 sentinel = object()
+                # >> EVENT: set by the consumer when it has finished the batch.
                 consumer_done = threading.Event()
 
                 collected_preds: List[gpd.GeoDataFrame] = []
+                # >> Lock shared with the consumer for the result lists.
                 lock = threading.Lock()
                 
+                # >> Start the single CONSUMER thread (daemon = will not keep Python
+                # >> alive).
                 consumer_thread = threading.Thread(
                     target=self._consumer,
                     args=(q, sentinel, collected_preds, fails,
@@ -1015,24 +1184,33 @@ class InferenceEngine:
                 )
                 consumer_thread.start()
 
+                # >> THREAD POOL of PRODUCERS: each downloads (or reads cached) pixels for
+                # >> a tile.
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     future_to_tile = {
                         ex.submit(self.produce_tile_input, tile):
                         tile for tile in batch_tiles
                     }
+                    # >> as_completed: handle tiles in the order downloads finish, not
+                    # >> tile order.
                     for fut in as_completed(future_to_tile):
                         tile = future_to_tile[fut]
                         try:
                             item = fut.result()
+                            # >> Hand the tile to the consumer; blocks if the queue is
+                            # >> full.
                             q.put(item)
                         except Exception as e:
                             self.logger.error(
                                 f"Producer failed for tile {tile.key}: {e}")
+                            # >> Download failures are recorded for the next retry round.
                             fails.append(tile)
 
+                # >> Tell the consumer the batch is over, then wait until it has finished.
                 q.put(sentinel)
                 consumer_done.wait()
 
+                # >> Merge this batch's detections into the running total (all EPSG:4326).
                 if collected_preds:
                     batch_gdf = self._ensure_gdf(
                         gpd.pd.concat(collected_preds, ignore_index=True))
@@ -1046,6 +1224,9 @@ class InferenceEngine:
                     self.logger.info(f"Found {len(batch_gdf)} new positives.")
                     print(f"Found {len(batch_gdf)} new positives.", flush=True)
                     
+                    # >> FILE WRITE: the whole cumulative table is rewritten to the same
+                    # >> GeoJSON after each batch with detections, so a crash still leaves
+                    # >> partial results on disk.
                     Path(outpath).parent.mkdir(parents=True, exist_ok=True)
                     # Pinned: left unset this floats with the GDAL/pyogrio
                     # version on whichever VM ran the job. The 2024 detections
@@ -1056,17 +1237,21 @@ class InferenceEngine:
                     predictions.to_file(outpath, index=False, driver="GeoJSON",
                                         COORDINATE_PRECISION=self.config.coordinate_precision)
 
+            # >> Tiles that failed this round become the next round's input.
             self.logger.info(f"{len(fails)} failed tiles.")
             retry_tiles = fails
             tries_remaining -= 1
 
+        # >> Gotcha: tiles still failing after the last round are only logged, not raised.
         return predictions
 
+    # >> Debug helper: score one tile directly, no threads or queue. Not used in runs.
     def predict_on_tile(self, tile: TileType) -> gpd.GeoDataFrame:
         """
         Convenience wrapper for debugging: run full inference on a single tile.
         Reuses the same logic as bulk_predict but without producer/consumer.
         """
+        # >> Embedding-cache branches (unused in production).
         emb_cache_dir = getattr(self.config, "embeddings_cache_dir", None)
         if emb_cache_dir is not None:
             if self.config.embedding_strategy == "cls_patch":
@@ -1097,8 +1282,13 @@ class InferenceEngine:
         preds_gdf, _ = self.predict_on_tile_pixels(pixels, tile)
         return preds_gdf
 
+# >> SAM2 mask maker: from a tile's pixels + detected chips, draws a pixel-level mine
+# >> outline and writes two GeoTIFFs per tile (-msk.tif and -logits.tif).
+# >> Production: built by sam2_mask.py, which calls bulk_mask_polygons on the
+# >> persistence-confirmed detections; SAM2 runs use tilesize 256 + pad 12 = 280 px.
 class SAM2_Masker:
     """Computes pixelwise segmentations."""
+    # >> Stores the extractor (for downloads/saves) and config; loads SAM2 once.
     def __init__(
         self, data_extractor: GEE_Data_Extractor, config: MaskConfig):
         self.data_extractor = data_extractor
@@ -1107,17 +1297,25 @@ class SAM2_Masker:
         # mask_dir to a per-run subfolder *after* constructing the config (see
         # sam2_mask.py), and MaskConfig is also instantiated merely to read
         # defaults, which must not touch the disk.
+        # >> FILE WRITE: mask_config.txt in mask_dir (provenance of the logits).
         self.config.write_config()
 
+        # >> DEVICE: NVIDIA GPU if available, else CPU (no Apple mps here, unlike above).
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
 
+        # >> SAM LOCK: one tile at a time through SAM2 (its predictor keeps per-image
+        # >> state).
         self._sam_lock = threading.Lock()
         
         self.predictor = self._load_model()
 
+    # >> MODEL LOADING for SAM2: build_sam2 builds Hiera-Small from the Hydra config and
+    # >> loads the base checkpoint (sam2.1_hiera_small.pt), then the project's fine-tuned
+    # >> weights (SAM_model_96_px_final.pth) are loaded on top. Returns a predictor
+    # >> object.
     def _load_model(self):
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -1127,12 +1325,19 @@ class SAM2_Masker:
             self.config.sam2_checkpoint,
             device=self.device)
 
+        # >> Fine-tuned weights read onto the CPU first, then copied into the model.
         state = torch.load(self.config.finetuned_weights, map_location="cpu")
+        # >> strict=False: silently ignores missing / extra keys. Gotcha: a wrong weights
+        # >> file would load without error and leave base SAM2 weights in place.
         sam2_model.load_state_dict(state, strict=False)
+        # >> eval() = inference mode (no dropout / training behaviour).
         sam2_model.eval()
         
         return SAM2ImagePredictor(sam2_model)
 
+    # >> Builds ONE box prompt per tile: the bounding box of the union of all detections.
+    # >> Lat/lon bounds -> pixel [x0, y0, x1, y1] via the INVERSE affine transform
+    # >> (~transform maps lon/lat to column/row). Clipped to the image; None if empty.
     @staticmethod
     def polygon_gdf_to_pixel_bbox(
         gdf: gpd.GeoDataFrame, transform: Affine,
@@ -1148,7 +1353,9 @@ class SAM2_Masker:
         minx, miny, maxx, maxy = geom.bounds
         inv = ~transform
 
+        # >> North-west corner (minx, maxy) -> top-left pixel; row 0 is the north edge.
         x0, y0 = inv * (minx, maxy)
+        # >> South-east corner (maxx, miny) -> bottom-right pixel.
         x1, y1 = inv * (maxx, miny)
 
         x0 = int(np.clip(np.floor(x0), 0, width - 1))
@@ -1161,12 +1368,17 @@ class SAM2_Masker:
 
         return np.array([x0, y0, x1, y1], dtype=np.int32)
 
+    # >> Makes an 8-bit true-colour image for SAM2: bands [3,2,1] = B4 red, B3 green, B2
+    # >> blue. Divide by 3000 (reflectance 0.3 = white), clip 0..1, x255, uint8 (H, W, 3).
     def get_rgb(self, pixels: np.ndarray) -> np.ndarray:
         """Convert Sentinel-2 reflectance -> uint8 RGB w/ constrast stretch."""
         rgb = pixels[..., [3, 2, 1]].astype(np.float32)
         rgb = np.clip(rgb / 3000.0, 0, 1)
         return (rgb * 255).astype(np.uint8)
 
+    # >> SOFT SPATIAL PRIOR: a logit bonus/penalty map on the tile grid (H, W) float32.
+    # >> 0 inside detected polygons; outside, -(distance_px / 12)^2, so 12 px away = -1,
+    # >> 24 px = -4, 60 px = -25. It pushes SAM2 to stay near what the CNN found.
     def soft_spatial_prior(
         self, preds_gdf: gpd.GeoDataFrame, transform: Affine,
         width: int, height: int) -> np.ndarray:
@@ -1175,6 +1387,7 @@ class SAM2_Masker:
         - Inside detection mask: 0
         - Outside: quadratic negative penalty increasing with distance
         """
+        # >> rasterize: burn detection polygons into a (H, W) grid, 1 inside, 0 outside.
         raster = rasterio.features.rasterize(
             ((geom, 1) for geom in preds_gdf.geometry
             if geom is not None and not geom.is_empty),
@@ -1184,6 +1397,7 @@ class SAM2_Masker:
             dtype="uint8",
         ).astype(bool)
 
+        # >> Distance (pixels) from every outside pixel to the nearest inside pixel.
         dist_outside = ndi.distance_transform_edt(~raster)
 
         penalty = -(dist_outside / self.config.prior_sigma) ** 2
@@ -1192,6 +1406,8 @@ class SAM2_Masker:
 
         return prior
 
+    # >> Resizes the prior (e.g. 280x280) to SAM2's low-res logit grid (256x256) with
+    # >> linear interpolation (ndi.zoom order=1), so they can be added.
     @staticmethod
     def resize_prior_to_logits(
         prior: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
@@ -1203,6 +1419,8 @@ class SAM2_Masker:
         out = ndi.zoom(prior, (scale_y, scale_x), order=1)
         return out.astype(np.float32)
 
+    # >> Upsamples SAM2's 256x256 logits back to the tile size with bilinear interpolation
+    # >> (torch F.interpolate), then optionally Gaussian-blurs with sigma 2.5 px.
     def upsample_logits(
         self, logits: np.ndarray, target_shape: Tuple[int, int],
         smooth: bool = True) -> np.ndarray:
@@ -1213,6 +1431,7 @@ class SAM2_Masker:
         field before that step; :meth:`predict` smooths and clamps it to build
         the persisted ``-logits.tif``.
         """
+        # >> Reshape (h, w) -> (1, 1, h, w) because torch expects batch + channel dims.
         logits_tensor = torch.from_numpy(logits[None, None, ...]).float()
         upsampled = F.interpolate(
             logits_tensor,
@@ -1223,10 +1442,16 @@ class SAM2_Masker:
 
         sigma = self.config.smoothing_sigma
         if smooth and sigma and sigma > 0:
+            # >> gaussian_filter: smooths ragged edges before thresholding at 0.
             upsampled = ndi.gaussian_filter(upsampled, sigma=sigma)
 
         return upsampled
 
+    # >> Makes the mask for one tile. Steps: box prompt -> SAM2 (3 candidate masks) ->
+    # >> best by score -> + spatial prior -> upsample + blur -> mask = logits > 0.
+    # >> FILE WRITES (via gee.save_tile, EPSG:4326, deflate, tiled):
+    # >>   <collection>_<tile.key>_<start>_<end>-msk.tif    uint8 0/1, nodata 2
+    # >>   <collection>_<tile.key>_<start>_<end>-logits.tif float32 in +/-16, nodata NaN
     def predict(self, pixels: np.ndarray, tile: TileType,
                 preds_gdf: gpd.GeoDataFrame):
         """Run SAM2 using polygon-derived box prompts.
@@ -1235,6 +1460,7 @@ class SAM2_Masker:
         tile: TileType
         preds_gdf: GeoDataFrame in EPSG:4326 (positive chip geometries).
         """
+        # >> Affine transform = the formula linking pixel (col, row) to (lon, lat).
         height, width = pixels.shape[:2]
         transform = self.data_extractor.affine_from_tile(tile, width, height)
 
@@ -1244,20 +1470,30 @@ class SAM2_Masker:
         if box_prompt is None:
             return {}
 
+        # >> SAM LOCK: serialise SAM2 calls across the worker threads.
         with self._sam_lock:
+            # >> Encode the RGB image once (the heavy SAM2 image encoder runs here).
             self.predictor.set_image(self.get_rgb(pixels))
+            # >> multimask_output=True -> 3 candidate masks, 3 quality scores, and 3 low-
+            # >> res (256x256) logit maps. 'labels' is really the masks array (misleading
+            # >> name).
             labels, scores, prob_logits = self.predictor.predict(
                 box=box_prompt,
                 multimask_output=True)
 
+        # >> Keep the logit map of the highest-scoring candidate: (256, 256).
         best_logits = prob_logits[np.argmax(scores)]
         
+        # >> Prior on the tile grid, resized to 256x256, then ADDED in log-odds space.
         prior = self.soft_spatial_prior(preds_gdf, transform, width, height)
         prior = self.resize_prior_to_logits(prior, best_logits.shape)
         log_odds = best_logits + prior
+        # >> Upsample to tile size (H, W) + Gaussian sigma 2.5.
         upsampled = self.upsample_logits(log_odds, pixels.shape[:2])
+        # >> MASK = logit > 0 (probability > 0.5). uint8: 1 = mine, 0 = not.
         mask = (upsampled > 0).astype('uint8')
 
+        # >> FILE WRITE: <...>-msk.tif, 1 band uint8, nodata 2 (see gee.save_tile).
         self.data_extractor.save_tile(
             pixels=mask[..., None],  # single band
             tile=tile,
@@ -1287,14 +1523,17 @@ class SAM2_Masker:
         # legacy tile can only produce the clamp-first form, since the unclipped
         # field is gone; that residual is the price of the migration, not a
         # reason to degrade new runs to match it.
+        # >> Same field without blur, then blur via sam2_logits.smooth_logits (NaN-safe).
         upsampled_unsmoothed = self.upsample_logits(
             log_odds, pixels.shape[:2], smooth=False)
         stored_logits = smooth_logits(
             upsampled_unsmoothed, self.config.smoothing_sigma)
+        # >> Clamp to +/-16 AFTER smoothing, so (stored > 0) equals the mask exactly.
         clamp = self.config.logit_clamp
         if clamp:
             stored_logits = np.clip(stored_logits, -clamp, clamp)
 
+        # >> FILE WRITE: <...>-logits.tif, 1 band float32, nodata NaN.
         self.data_extractor.save_tile(
             pixels=stored_logits[..., None],
             tile=tile,
@@ -1308,6 +1547,9 @@ class SAM2_Masker:
             "box_prompt": box_prompt,
         }
 
+    # >> Smooths the detection polygons into simpler areas used only to choose tiles.
+    # >> Buffer out then in by 0.005 deg (about 550 m) merges nearby shapes; holes
+    # >> dropped. Input/output GeoDataFrames in EPSG:4326 (degrees).
     def _simplify_for_tiling(
         self, gdf: gpd.GeoDataFrame,
         buffer_width: float = 0.005) -> gpd.GeoDataFrame:
@@ -1318,10 +1560,13 @@ class SAM2_Masker:
         """
         gdf = gdf.copy()
 
+        # >> Grow then shrink: closes gaps < ~1 km; join_style=2 = mitre (square corners).
         gdf["geometry"] = gdf.geometry.buffer(
             buffer_width, join_style=2).buffer(
             -buffer_width, join_style=2)
 
+        # >> Keeps only the outer ring of each polygon (fills holes). Gotcha: checks
+        # >> geom.is_empty before 'is None', so a None geometry would crash.
         def _drop_holes(geom):
             if geom.is_empty or geom is None:
                 return None
@@ -1337,19 +1582,26 @@ class SAM2_Masker:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
+            # >> buffer(0) = standard trick to repair invalid polygons.
             gdf["geometry"] = gdf.buffer(0)
 
         gdf = gdf[gdf.is_valid & ~gdf.is_empty].reset_index(drop=True)
 
         return gdf
 
+    # >> SAM2 over a whole area: makes tiles covering the polygons, clips detections per
+    # >> tile, then masks each tile in a thread pool (8 workers, batches of 500 tiles).
+    # >> Called by sam2_mask.py. Outputs are the per-tile .tif files written in predict().
     def bulk_mask_polygons(
         self, polys_gdf: gpd.GeoDataFrame,
         max_concurrent_tiles=500) -> gpd.GeoDataFrame:
         """Compute segmentation masks for wide-area polygons."""
         
+        # >> CRS conversion: make sure detections are lat/lon (EPSG:4326).
         polys_gdf = polys_gdf.to_crs("EPSG:4326")
         region_gdf = self._simplify_for_tiling(polys_gdf)
+        # >> DLTiles (UTM grid) covering the simplified area; tilesize/pad from
+        # >> DataConfig.
         tiles = create_tiles(
             region_gdf.union_all(),
             self.data_extractor.config.tilesize,
@@ -1357,9 +1609,11 @@ class SAM2_Masker:
         )
         print(f'{len(tiles)} tiles created.')
 
+        # >> gpd.clip is run in one thread because it is not thread-safe (per the code).
         # --- precompute intersections single-threaded - not thread safe ---
         tiles_w_polys = []
         for tile in tqdm(tiles, desc="Clipping polygons"):
+            # >> Clip detections to this tile's square; keep only valid, non-empty pieces.
             tile_polys = gpd.clip(polys_gdf, tile.geometry)
             tile_polys = tile_polys[
                 tile_polys.is_valid &
@@ -1369,6 +1623,8 @@ class SAM2_Masker:
                 tiles_w_polys.append((tile, tile_polys))
 
         # --- SAM2 masking multi-threaded --- 
+        # >> Worker job: download pixels for a tile, then run SAM2 (serialised by the
+        # >> lock).
         def process_tile(tile: TileType, tile_polys: gpd.GeoDataFrame) -> None:
             pixels = self.data_extractor.get_tile_data(tile)
             # Discard predict()'s return value rather than handing it back.
@@ -1380,6 +1636,7 @@ class SAM2_Masker:
             # already written to disk inside predict(); nothing here needs it.
             self.predict(pixels, tile, tile_polys)
 
+        # >> BATCHES of 500 tiles; each batch gets a fresh THREAD POOL of 8 workers.
         for i in tqdm(range(0, len(tiles_w_polys), max_concurrent_tiles),
                       desc="Processing tiles"):
             batch = tiles_w_polys[i : i + max_concurrent_tiles]
@@ -1390,6 +1647,7 @@ class SAM2_Masker:
                     ex.submit(process_tile, tile, tp): tile for tile, tp
                         in batch
                 }
+                # >> Gotcha: failed tiles are only printed; there is no retry here.
                 for future in as_completed(futures):
                     try:
                         future.result()

@@ -11,30 +11,44 @@ The deduplication logic lives in ``core/postprocess.py`` alongside the rest of
 the detection-catalog operations; this is the CLI over it.
 """
 
+# >> FILE OVERVIEW
+# >> Joins the six Amazon_ACA subregion detection files for one period into one basin
+# >> file, removing seam duplicates (same chip scored by two adjacent subregion runs).
+# >> Called by scripts/pipeline.py (concatenate stage) with the 6 parts + --outpath.
+# >> Output feeds postprocess.py. Upstream file (fork added comments only).
 import argparse
 import sys
 from pathlib import Path
 
+# >> Note: argparse and Path are imported twice (harmless duplicate imports).
 import argparse           # CLI parsing
 from pathlib import Path  # output-directory creation
 
 import geopandas as gpd   # geo-aware I/O; does all reading/writing here
 
+# >> Make core/ importable so postprocess.py can be reused.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from postprocess import PostprocessConfig, dedupe_detections  # noqa: E402
 
 
+# >> Reads N detection GeoJSONs, stacks them, dedupes, writes one GeoJSON.
+# >> In: list of paths (each a FeatureCollection of 48 px chip squares, EPSG:4326, with
+# >> 'confidence'). Out: file at outpath, 6-decimal coordinates.
+# >> Dedupe key = chip centre rounded to 5 dp; keeps the highest-confidence copy.
 def concatenate(paths, outpath, dedupe=True):
     """Concatenate FeatureCollections, deduplicating shared locations."""
     if not paths:
         raise ValueError("At least one input path is required.")
 
     config = PostprocessConfig()
+    # >> Read every file and stack into one table (gpd.pd = pandas, via geopandas).
     gdf = gpd.pd.concat([gpd.read_file(p) for p in paths], ignore_index=True)
     if dedupe:
+        # >> Drop seam duplicates (postprocess.dedupe_detections), keep max confidence.
         gdf = dedupe_detections(gdf, confidence_field=config.confidence_field,
                                 decimals=config.centroid_decimals)
 
+    # >> File write: combined GeoJSON, coordinates rounded to 6 decimals.
     Path(outpath).parent.mkdir(parents=True, exist_ok=True)
     gdf.to_file(outpath, driver="GeoJSON", index=False,
                 COORDINATE_PRECISION=config.coordinate_precision)
@@ -43,6 +57,7 @@ def concatenate(paths, outpath, dedupe=True):
 
 if __name__ == '__main__':
 
+    # >> CLI: input paths, --outpath (default ./combined_detections.geojson), --no-dedupe.
     parser = argparse.ArgumentParser(
         description=(
             "Concatenate model detection GeoJSONs, dropping locations that "

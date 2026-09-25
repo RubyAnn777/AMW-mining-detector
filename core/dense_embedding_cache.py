@@ -6,6 +6,13 @@ Two files per parent tile (see ``docs/design/planning.md``):
   - *_embed_dense_patch.parquet — one row per ViT patch cell, spatial only
 """
 
+# >> FILE OVERVIEW
+# >> UNUSED IN PRODUCTION. Parquet cache for SSL4EO ViT foundation-model embeddings
+# >> (the 'cls_patch' strategy). Production scores with the CNN on raw pixels
+# >> (embedding_strategy='none'), so none of this runs; ViT weights are not in the repo.
+# >> Imported by core/inference_engine.py (embed_dense path only). Upstream file.
+# >> Jargon: ViT = Vision Transformer; CLS token = one summary vector per image window;
+# >> patch tokens = one vector per small grid cell of the window.
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,11 +24,15 @@ import pandas as pd
 from shapely.geometry import box
 
 
+# >> The two file paths of one cache entry (CLS file, patch file). UNUSED in production.
 class DenseCachePaths(NamedTuple):
     cls_parquet: Path
     patch_parquet: Path
 
 
+# >> Builds cache filenames: <collection>_<tile_key>_<start>_<end>_embed_dense_cls.parquet
+# >> and ..._embed_dense_patch.parquet in emb_cache_dir. UNUSED in production.
+# >> Called by inference_engine.py:_make_dense_embedding_cache_paths.
 def make_dense_cache_paths(
     emb_cache_dir: Path,
     collection: str,
@@ -38,14 +49,20 @@ def make_dense_cache_paths(
     )
 
 
+# >> Column names cls0..cls{dim-1} for the CLS vector.
 def cls_column_names(dim: int) -> List[str]:
     return [f"cls{i}" for i in range(dim)]
 
 
+# >> Column names spatial0..spatial{dim-1} for each patch vector.
 def spatial_column_names(dim: int) -> List[str]:
     return [f"spatial{i}" for i in range(dim)]
 
 
+# >> Writes the CLS/patch pair of Parquet files for one tile. UNUSED in production.
+# >> In: cls_tokens (N, D), spatial (N, H, W, D), N window footprints. Out: 2 files.
+# >> CLS file = GeoParquet, one row per window; patch file = plain Parquet, N*H*W rows.
+# >> Row-by-row Python dicts: slow for big D, fine for a cache.
 def save_dense_embedding_parquets(
     paths: DenseCachePaths,
     cls_tokens: np.ndarray,
@@ -67,6 +84,7 @@ def save_dense_embedding_parquets(
     parent_key
         Usually ``tile.key`` for the parent tile (e.g. DLTile id).
     """
+    # >> Shape checks: (N, D) and (N, H, W, D) with matching N and D.
     if cls_tokens.ndim != 2:
         raise ValueError(f"cls_tokens must be (N, Dim), got {cls_tokens.shape}")
     if spatial.ndim != 4:
@@ -86,6 +104,7 @@ def save_dense_embedding_parquets(
     spat_names = spatial_column_names(dim)
 
     cls_rows: List[Dict[str, Any]] = []
+    # >> Loop: one row per window i ('quadrant' = window index).
     for i in range(n):
         window_id = f"{parent_key}_q{i}"
         row: Dict[str, Any] = {
@@ -99,9 +118,11 @@ def save_dense_embedding_parquets(
         cls_rows.append(row)
 
     cls_gdf = gpd.GeoDataFrame(cls_rows, crs=chip_geoms.crs or "EPSG:4326")
+    # >> File write: CLS GeoParquet (geometry = window footprint).
     cls_gdf.to_parquet(paths.cls_parquet, index=False)
 
     patch_rows: List[Dict[str, Any]] = []
+    # >> Loop order: window -> patch row -> patch column (row-major).
     for i in range(n):
         window_id = f"{parent_key}_q{i}"
         for r in range(h):
@@ -117,9 +138,12 @@ def save_dense_embedding_parquets(
                     pr[name] = float(spatial[i, r, c, j])
                 patch_rows.append(pr)
 
+    # >> File write: patch Parquet (no geometry).
     pd.DataFrame(patch_rows).to_parquet(paths.patch_parquet, index=False)
 
 
+# >> Reads the Parquet pair back into arrays, or None if either file is missing.
+# >> Out: cls (N, D) float32, spatial (N, H, W, D) float32, geometries, ids. UNUSED.
 def load_dense_embedding_parquets(
     paths: DenseCachePaths,
 ) -> Optional[Dict[str, Any]]:
@@ -139,17 +163,20 @@ def load_dense_embedding_parquets(
     if not isinstance(cls_gdf, gpd.GeoDataFrame):
         cls_gdf = gpd.GeoDataFrame(cls_gdf, geometry="geometry")
 
+    # >> Find cls0.. columns and sort numerically (cls10 after cls9, not after cls1).
     cls_cols = [c for c in cls_gdf.columns if c.startswith("cls") and c[3:].isdigit()]
     if not cls_cols:
         raise ValueError("No cls0, cls1, ... columns in cls parquet")
     cls_cols.sort(key=lambda x: int(x[3:]))
     dim = len(cls_cols)
 
+    # >> Restore window order (stable sort).
     cls_gdf = cls_gdf.sort_values("quadrant", kind="mergesort").reset_index(drop=True)
     n = len(cls_gdf)
     cls_arr = cls_gdf[cls_cols].to_numpy(dtype=np.float32)
 
     patch_df = pd.read_parquet(paths.patch_parquet)
+    # >> Sort patch rows window -> row -> col so the reshape below is correct.
     patch_df = patch_df.sort_values(
         ["quadrant", "patch_row", "patch_col"], kind="mergesort"
     ).reset_index(drop=True)
@@ -172,6 +199,7 @@ def load_dense_embedding_parquets(
             f"cls dim {dim} != spatial dim {len(spat_cols)}"
         )
 
+    # >> Grid size from the largest row/col index (+1).
     h = int(patch_df["patch_row"].max()) + 1
     w = int(patch_df["patch_col"].max()) + 1
     if h * w * n != len(patch_df):
@@ -180,6 +208,7 @@ def load_dense_embedding_parquets(
         )
 
     spatial_arr = np.empty((n, h, w, dim), dtype=np.float32)
+    # >> Reshape per window: (H*W, D) rows -> (H, W, D).
     for q in range(n):
         sub = patch_df.loc[patch_df["quadrant"] == q, spat_cols]
         if len(sub) != h * w:
@@ -202,6 +231,8 @@ def load_dense_embedding_parquets(
     }
 
 
+# >> Splits each window footprint into a grid_side x grid_side grid of boxes (in the
+# >> window's own CRS units, usually degrees), north row first. UNUSED in production.
 def build_patch_cell_geometries(
     window_geoms: gpd.GeoDataFrame,
     grid_side: int,
@@ -235,6 +266,8 @@ def build_patch_cell_geometries(
     return gpd.GeoDataFrame(geometry=polys, crs=crs)
 
 
+# >> Builds a probe feature matrix: per patch cell, [CLS vector || patch vector].
+# >> Out: features (N*H*W, 2D) float32 and a metadata table. UNUSED in production.
 def merge_cls_patch_for_probe(
     loaded: Dict[str, Any],
 ) -> Tuple[np.ndarray, pd.DataFrame]:
@@ -260,6 +293,7 @@ def merge_cls_patch_for_probe(
         for r in range(h):
             for cc in range(w):
                 s = spatial[q, r, cc]
+                # >> Join the window's CLS (D) with this cell's vector (D) -> (2D,).
                 rows_feat.append(np.concatenate([c, s]).astype(np.float32, copy=False))
                 rows_meta.append(
                     {
@@ -271,6 +305,7 @@ def merge_cls_patch_for_probe(
                     }
                 )
 
+    # >> Stack list of (2D,) rows -> (N*H*W, 2D).
     feat = np.stack(rows_feat, axis=0)
     meta = pd.DataFrame(rows_meta)
     return feat, meta

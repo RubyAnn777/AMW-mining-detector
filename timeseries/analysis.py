@@ -44,6 +44,12 @@ Usage:
 
 Outputs: <out_dir>/REPORT.md, figs/*.png, tables/*.csv
 """
+# >> FILE OVERVIEW: fork-original (Ruby's research layer); the last step of timeseries/.
+# >> Reads every panel_*.parquet (from panel.py) and tile_stats_*.csv, runs report
+# >> sections
+# >> A-J, and writes <out_dir>/REPORT.md plus figs/*.png and tables/*.csv.
+# >> Question: is a monthly series usable, or are quarterly composites the better base?
+# >> Run by hand, or by run_staged.sh --analyse. Upstream AMW has no equivalent.
 from __future__ import annotations
 
 import argparse
@@ -58,6 +64,7 @@ matplotlib.use("Agg")  # headless: runs unattended at the end of the overnight j
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+# >> scipy.stats: Spearman correlation, linear regression, Mann-Whitney U test.
 from scipy import stats
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +73,16 @@ log = logging.getLogger("analysis")
 # ----------------------------------------------------------------------------#
 # constants / definitions                                                     #
 # ----------------------------------------------------------------------------#
+# >> Constants (analysis choices, not pipeline settings):
+# >> UTM_CRS: UTM zone 19 South, metres. Chip squares are reprojected here for area and
+# >> IoU.
+# >> TAU_OBSERVED 0.95: a chip counts as observed if >= 95% of its pixels had a clear
+# >> scene.
+# >> TAU_SENSITIVITY 0.50: laxer "observed" rule, reported alongside in section A.
+# >> T_MAIN 0.4: score threshold for "mining" (matches the basin inference floor).
+# >> T_ALT 0.5: the engine's default threshold, used as a sensitivity check.
+# >> T_GRID: thresholds 0.30, 0.35, ..., 0.60 (7 values) for section G.
+# >> NEAR_BAND 0.05: "near threshold" = prob within 0.35-0.45 when t = 0.4.
 UTM_CRS = "EPSG:32719"        # UTM 19S — correct metric CRS for Madre de Dios
 TAU_OBSERVED = 0.95           # chip counts as OBSERVED if clear_frac >= tau
 TAU_SENSITIVITY = 0.50        # laxer definition, reported alongside
@@ -74,10 +91,14 @@ T_ALT = 0.5                   # engine default, for sensitivity
 T_GRID = np.round(np.arange(0.30, 0.61, 0.05), 2)
 NEAR_BAND = 0.05              # "near-threshold" = |prob - T_MAIN| <= NEAR_BAND
 
+# >> Period label patterns: monthly 'm2025-01', quarterly 'q2025Q1'.
 MONTH_RE = re.compile(r"^m(\d{4})-(\d{2})$")
 QUARTER_RE = re.compile(r"^q(\d{4})Q(\d)$")
 
 
+# >> What: tells which quarter a month belongs to.
+# >> In: label 'm2025-04'; out: 'q2025Q2' (months 1-3 -> Q1, etc.); None for other labels.
+# >> Used by sections E, F and H to line up months with their quarter.
 def quarter_of_month(label: str) -> str | None:
     """'m2025-04' -> 'q2025Q2'; None for non-month labels."""
     m = MONTH_RE.match(label)
@@ -90,10 +111,17 @@ def quarter_of_month(label: str) -> str | None:
 # ----------------------------------------------------------------------------#
 # loading                                                                     #
 # ----------------------------------------------------------------------------#
+# >> What: loads all period panels into one big table (rows = chip x period).
+# >> FILE READ: panels_dir/panel_*.parquet (GeoParquet, EPSG:4326) via geopandas, then
+# >> concat. e.g. 42,320 chips x 16 periods for La Pampa. Exits the program if no file is
+# >> found.
+# >> Gotcha: no filter on year/model/threshold; _check_provenance is the only safety net.
 def load_panels(panels_dir: Path) -> gpd.GeoDataFrame:
     files = sorted(panels_dir.glob("panel_*.parquet"))
     if not files:
         sys.exit(f"No panel files in {panels_dir} — run run_trials.py first.")
+    # >> Each parquet -> GeoDataFrame (geometry decoded from WKB, CRS restored from
+    # >> metadata).
     parts = [gpd.read_parquet(f) for f in files]
     df = pd.concat(parts, ignore_index=True)
     log.info("Loaded %d chip-period rows from %d panels", len(df), len(files))
@@ -101,6 +129,10 @@ def load_panels(panels_dir: Path) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(df, geometry="geometry", crs=parts[0].crs)
 
 
+# >> What: refuses to mix panels that are not comparable.
+# >> FATAL (sys.exit): duplicate (chip_id, period) rows, or more than one clear_threshold.
+# >> WARN only: no provenance columns (schema v1), or mixed schema / region / model /
+# >> weights / chip size / stride / code version. Called by load_panels.
 def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
     """Refuse to silently pool panels produced under different configurations.
 
@@ -121,6 +153,7 @@ def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
     # hence identical chip_ids, hence exact duplicate rows — verified 2026-08-07,
     # la_pampa_corridor is 100% inside madre_de_dios_mining_aoi.
     # This is fatal, never a warning: a silently doubled score is worse than no result.
+    # >> keep=False marks every copy of a duplicate, not only the second one.
     dup = df.duplicated(subset=["chip_id", "period"], keep=False)
     if dup.any():
         n = int(dup.sum())
@@ -170,6 +203,9 @@ def _check_provenance(df: pd.DataFrame, files: list[Path]) -> None:
              df["clear_threshold"].iloc[0], n_periods, len(files))
 
 
+# >> What: loads all per-tile diagnostics CSVs (tiles_dir/tile_stats_*.csv) into one
+# >> table.
+# >> Out: DataFrame (empty if none). Used only by section B (fill0_mismatch).
 def load_tile_stats(tiles_dir: Path) -> pd.DataFrame:
     files = sorted(tiles_dir.glob("tile_stats_*.csv"))
     return (pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
@@ -179,6 +215,12 @@ def load_tile_stats(tiles_dir: Path) -> pd.DataFrame:
 # ----------------------------------------------------------------------------#
 # helpers                                                                     #
 # ----------------------------------------------------------------------------#
+# >> What: total ground area covered by a set of chips, without double counting overlaps.
+# >> In: chip squares in EPSG:4326 -> reprojected to UTM 19S metres -> union_all -> .area.
+# >> Out: km² (m² / 1e6). One chip is ~0.23 km² (480 m x 480 m); chips overlap by half
+# >> (stride 24 of 48 px), so summing would count most ground ~4x.
+# >> Gotcha: union_all needs geopandas >= 1.0 (panel.py has a fallback; this file does
+# >> not).
 def dissolved_area_km2(g: gpd.GeoDataFrame) -> float:
     """Area of the UNION of (overlapping, stride-24) chip squares, in km².
     Union first — summing overlapping chips would double-count by ~4x."""
@@ -187,27 +229,35 @@ def dissolved_area_km2(g: gpd.GeoDataFrame) -> float:
     return float(g.to_crs(UTM_CRS).union_all().area) / 1e6
 
 
+# >> Formats a number with nd decimals for the report; None / NaN -> 'n/a'.
 def fmt(x, nd=3):
     return "n/a" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{nd}f}"
 
 
+# >> What: collects the markdown report line by line, then writes REPORT.md. add() appends
+# >> lines; table() adds a DataFrame as a fixed-width text block; write() saves.
 class Report:
     """Accumulates markdown; every analysis section appends here so a partial
     run (e.g. smoke test with 2 periods) still yields a readable report."""
 
+    # >> Starts an empty list of report lines.
     def __init__(self):
         self.lines: list[str] = []
 
+    # >> Appends any number of text lines (strings) to the report.
     def add(self, *ls: str):
         self.lines.extend(ls)
 
+    # >> Adds a DataFrame as a fenced plain-text block, rounded to float_nd decimals.
     def table(self, df: pd.DataFrame, float_nd=3):
         # plain-text block instead of markdown table: avoids the `tabulate`
         # dependency and keeps alignment for wide tables
         with pd.option_context("display.width", 200, "display.max_columns", 50):
             self.add("```", df.round(float_nd).to_string(), "```", "")
 
+    # >> Joins the lines with newlines and saves them to path.
     def write(self, path: Path):
+        # >> FILE WRITE: REPORT.md (UTF-8 markdown).
         path.write_text("\n".join(self.lines), encoding="utf-8")
         log.info("Report -> %s", path)
 
@@ -215,8 +265,17 @@ class Report:
 # ----------------------------------------------------------------------------#
 # A. coverage / missingness                                                   #
 # ----------------------------------------------------------------------------#
+# >> What (A): how much of each month / quarter could actually be seen through clouds.
+# >> Per period: n_chips, mean clear_frac, share of chips >= 0.95 and >= 0.5 observed,
+# >> share fully missing (clear_frac == 0), mean clear scenes per pixel.
+# >> Then: per chip, how many months it was observed (chronic gaps = rarely seen chips).
+# >> Writes tables/coverage_by_period.csv, tables/months_observed_histogram.csv and
+# >> figs/fig_A_coverage_by_period.png. Purpose: document seasonal (wet season)
+# >> missingness.
 def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
     rep.add("## A. Cloud coverage & missingness (the case for the cloud flag)", "")
+    # >> groupby: one row per (cadence, period); the lambdas are shares of chips above
+    # >> tau.
     per = (df.groupby(["cadence", "period"])
              .agg(n_chips=("chip_id", "size"),
                   mean_clear_frac=("clear_frac", "mean"),
@@ -225,6 +284,7 @@ def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
                   share_fully_missing=("clear_frac", lambda s: np.mean(s == 0)),
                   mean_n_clear=("n_clear_mean", "mean"))
              .reset_index())
+    # >> FILE WRITE: tables/coverage_by_period.csv.
     per.to_csv(tables / "coverage_by_period.csv", index=False)
     rep.add(f"Chip counts as *observed* if `clear_frac >= {TAU_OBSERVED}` "
             f"(sensitivity: {TAU_SENSITIVITY}).", "")
@@ -237,6 +297,8 @@ def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
         ax.plot(mo.period, mo.share_fully_obs, "o-", label=f"monthly, share chips ≥{TAU_OBSERVED} clear")
         ax.plot(mo.period, mo.mean_clear_frac, "s--", label="monthly, mean clear_frac")
         if len(qu):
+            # >> Map 'q2025Q1' -> 'm2025-02' so each quarter's point sits on its middle
+            # >> month.
             # place quarterly points at their middle month for visual comparison
             qx = {f"q{y}Q{q}": f"m{y}-{(int(q) - 1) * 3 + 2:02d}"
                   for y, q in (QUARTER_RE.match(p).groups() for p in qu.period)}
@@ -245,9 +307,11 @@ def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
         ax.set_ylim(0, 1.02); ax.set_ylabel("share / fraction")
         ax.set_title("Observability by period (wet season ≈ Nov–Mar)")
         ax.tick_params(axis="x", rotation=45); ax.legend(); fig.tight_layout()
+        # >> FILE WRITE: figs/fig_A_coverage_by_period.png at 150 dpi.
         fig.savefig(figs / "fig_A_coverage_by_period.png", dpi=150); plt.close(fig)
         rep.add("![coverage](figs/fig_A_coverage_by_period.png)", "")
 
+    # >> Chronic gaps: for each chip, count the months with clear_frac >= 0.95.
     # chronic gaps: chips rarely observed at monthly cadence are exactly the
     # locations where a monthly series would need heavy interpolation
     mdf = df[df.cadence == "monthly"]
@@ -255,6 +319,8 @@ def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
         months_obs = (mdf.assign(obs=mdf.clear_frac >= TAU_OBSERVED)
                         .groupby("chip_id")["obs"].sum())
         counts = months_obs.value_counts().sort_index()
+        # >> FILE WRITE: tables/months_observed_histogram.csv (#months observed ->
+        # >> #chips).
         counts.to_csv(tables / "months_observed_histogram.csv")
         n_months = mdf.period.nunique()
         rep.add(f"Distribution of #months (of {n_months}) each chip is fully "
@@ -267,6 +333,11 @@ def section_coverage(df: pd.DataFrame, rep: Report, figs: Path, tables: Path):
 # ----------------------------------------------------------------------------#
 # B. fill-value verification                                                  #
 # ----------------------------------------------------------------------------#
+# >> What (B): checks EE's "fully cloudy pixel = all zeros" rule via per-tile
+# >> fill0_mismatch.
+# >> Reports mean and max over all tile-periods; ~0 means the all-zero rule is a valid
+# >> cloud flag even for imagery cached without coverage counts.
+# >> Input: tile_stats CSVs written by panel.py (from panel.py:fill_zero_mismatch).
 def section_fill_check(tile_stats: pd.DataFrame, rep: Report):
     rep.add("## B. Empirical verification: cloud gap == all-zero pixels", "")
     if tile_stats.empty or "fill0_mismatch" not in tile_stats:
@@ -288,10 +359,18 @@ def section_fill_check(tile_stats: pd.DataFrame, rep: Report):
 # ----------------------------------------------------------------------------#
 # C. detection series & cloud bias                                            #
 # ----------------------------------------------------------------------------#
+# >> What (C): mining area per period, naive (all chips) vs cloud-aware (observed chips
+# >> only).
+# >> For t = 0.4 and 0.5: dissolved area in km² and positive-chip counts, per period.
+# >> Writes tables/area_series.csv and figs/fig_C_area_series.png; returns the table.
+# >> Per cadence summary: mean, CV (coefficient of variation = sd / mean), mean |change|
+# >> between consecutive periods, lag-1 autocorrelation. Purpose: size the cloud artefact.
 def section_series(df: gpd.GeoDataFrame, rep: Report, figs: Path, tables: Path):
     rep.add("## C. Detected mining area: naive vs cloud-aware", "")
     rows = []
+    # >> Loop: one group per (cadence, period), in sorted label order.
     for (cad, period), g in df.groupby(["cadence", "period"]):
+        # >> Observed subset: clear_frac >= 0.95.
         obs = g[g.clear_frac >= TAU_OBSERVED]
         for t in (T_MAIN, T_ALT):
             rows.append({
@@ -303,6 +382,7 @@ def section_series(df: gpd.GeoDataFrame, rep: Report, figs: Path, tables: Path):
                 "share_chips_observed": float(np.mean(g.clear_frac >= TAU_OBSERVED)),
             })
     ser = pd.DataFrame(rows)
+    # >> FILE WRITE: tables/area_series.csv.
     ser.to_csv(tables / "area_series.csv", index=False)
     rep.add(f"`area_naive` uses ALL chips (as the raw pipeline would); "
             f"`area_observed` restricts to chips with clear_frac ≥ {TAU_OBSERVED}. "
@@ -324,13 +404,16 @@ def section_series(df: gpd.GeoDataFrame, rep: Report, figs: Path, tables: Path):
                     markersize=10, label="quarterly, cloud-aware")
         ax.set_ylabel(f"km² (t={T_MAIN})"); ax.tick_params(axis="x", rotation=45)
         ax.set_title("Detected mining area"); ax.legend(); fig.tight_layout()
+        # >> FILE WRITE: figs/fig_C_area_series.png.
         fig.savefig(figs / "fig_C_area_series.png", dpi=150); plt.close(fig)
         rep.add("![area](figs/fig_C_area_series.png)", "")
 
+    # >> Stability stats need >= 3 periods; n is tiny, so descriptive only.
     # stability summaries (descriptive; n is tiny)
     for cad, sub in ser[ser.threshold == T_MAIN].groupby("cadence"):
         a = sub.sort_values("period").area_observed_km2.to_numpy()
         if len(a) >= 3:
+            # >> CV = sd / mean (NaN if the mean area is 0).
             cv = a.std(ddof=1) / a.mean() if a.mean() > 0 else np.nan
             d = np.diff(a)
             rep.add(f"- **{cad}** cloud-aware series: mean {fmt(a.mean(),1)} km², "
@@ -345,14 +428,25 @@ def section_series(df: gpd.GeoDataFrame, rep: Report, figs: Path, tables: Path):
 # ----------------------------------------------------------------------------#
 # D. is the 'signal' just clouds? confounding checks                          #
 # ----------------------------------------------------------------------------#
+# >> What (D): do month-to-month area changes just follow cloud-cover changes?
+# >> Series level (needs >= 6 months): first differences of area vs of share observed;
+# >> Spearman rank correlation and an OLS line with R². Writes
+# >> figs/fig_D_area_vs_coverage.png.
+# >> Chip level: among chips observed in both months, do chips that flip class at t = 0.4
+# >> have bigger |change in clear_frac|? One-sided Mann-Whitney U test (a rank test).
+# >> A positive link means missingness leaks into the "cloud-aware" series.
 def section_confounding(df: pd.DataFrame, ser: pd.DataFrame, rep: Report,
                         figs: Path):
     rep.add("## D. Confounding: does apparent change track cloud cover?", "")
     m = ser[(ser.cadence == "monthly") & (ser.threshold == T_MAIN)].sort_values("period")
     if len(m) >= 6:
+        # >> np.diff: 12 monthly values -> 11 month-to-month changes.
         d_area = np.diff(m.area_observed_km2.to_numpy())
         d_cov = np.diff(m.share_chips_observed.to_numpy())
+        # >> Spearman rho: rank correlation, robust to outliers; p-value unreliable at n =
+        # >> 11.
         rho, p = stats.spearmanr(d_area, d_cov)
+        # >> OLS line: change in area regressed on change in share of chips observed.
         slope, icpt, r, p_ols, se = stats.linregress(d_cov, d_area)
         rep.add(f"First differences, monthly, cloud-aware series (n={len(d_area)} pairs):",
                 f"- Spearman ρ(Δarea, Δcoverage) = {fmt(rho,2)} (p={fmt(p,2)}, exact "
@@ -370,6 +464,7 @@ def section_confounding(df: pd.DataFrame, ser: pd.DataFrame, rep: Report,
         ax.scatter(d_cov, d_area)
         ax.set_xlabel("Δ share of chips observed"); ax.set_ylabel("Δ area km²")
         ax.set_title("Monthly first differences"); fig.tight_layout()
+        # >> FILE WRITE: figs/fig_D_area_vs_coverage.png.
         fig.savefig(figs / "fig_D_area_vs_coverage.png", dpi=150); plt.close(fig)
         rep.add("![confound](figs/fig_D_area_vs_coverage.png)", "")
     else:
@@ -378,19 +473,27 @@ def section_confounding(df: pd.DataFrame, ser: pd.DataFrame, rep: Report,
     # chip-level: are classification flips associated with coverage changes?
     mdf = df[df.cadence == "monthly"]
     if mdf.period.nunique() >= 2:
+        # >> Reshape long -> wide: rows = chip_id, columns = month label, values = prob /
+        # >> clear_frac.
         wide_p = mdf.pivot_table(index="chip_id", columns="period", values="prob")
         wide_c = mdf.pivot_table(index="chip_id", columns="period", values="clear_frac")
         cols = sorted(wide_p.columns)
         flips, dcov_flip, dcov_stable = 0, [], []
+        # >> Consecutive month pairs (Jan-Feb, Feb-Mar, ...); sorted labels are
+        # >> chronological.
         for a, b in zip(cols[:-1], cols[1:]):
+            # >> Only chips observed (>= 0.95) in BOTH months of the pair.
             ok = (wide_c[a] >= TAU_OBSERVED) & (wide_c[b] >= TAU_OBSERVED)
             pa, pb = wide_p.loc[ok, a], wide_p.loc[ok, b]
+            # >> Flip = above 0.4 in one month and not in the other.
             flip = (pa > T_MAIN) != (pb > T_MAIN)
             dc = (wide_c.loc[ok, b] - wide_c.loc[ok, a]).abs()
             flips += int(flip.sum())
             dcov_flip += dc[flip].tolist()
             dcov_stable += dc[~flip].tolist()
         if dcov_flip and dcov_stable:
+            # >> alternative="greater": tests whether flippers had larger coverage
+            # >> changes.
             u = stats.mannwhitneyu(dcov_flip, dcov_stable, alternative="greater")
             rep.add(f"Chip-level: {flips} month-to-month classification flips at "
                     f"t={T_MAIN} among consecutively-observed chips. "
@@ -404,6 +507,14 @@ def section_confounding(df: pd.DataFrame, ser: pd.DataFrame, rep: Report,
 # ----------------------------------------------------------------------------#
 # E. monthly vs quarterly consistency                                          #
 # ----------------------------------------------------------------------------#
+# >> What (E): do monthly and quarterly composites agree about the same chips?
+# >> Balanced subsample per quarter: chips observed in the quarter AND all 3 months (>=
+# >> 50).
+# >> Metrics: Spearman(quarterly prob, mean of 3 monthly probs), mean absolute error,
+# >> Cohen's kappa (agreement beyond chance) of the quarterly class vs the monthly-mean
+# >> class and vs "any month positive", geo-IoU of the positive footprints, and positive
+# >> rates.
+# >> Writes tables/mq_consistency.csv and figs/fig_E_mq_scatter.png.
 def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
                         tables: Path):
     rep.add("## E. Monthly ↔ quarterly consistency", "",
@@ -417,10 +528,13 @@ def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
         rep.add("_Need both cadences — skipped._", "")
         return
 
+    # >> Tag each monthly row with its quarter label (e.g. m2025-05 -> q2025Q2).
     mdf = mdf.assign(q=mdf.period.map(quarter_of_month))
     rows = []
+    # >> One scatter panel per quarter, 4 inches wide each.
     fig, axes = plt.subplots(1, max(qdf.period.nunique(), 1),
                              figsize=(4 * qdf.period.nunique(), 4), squeeze=False)
+    # >> Loop over quarters. Gotcha: a skipped quarter leaves its subplot empty.
     for ax, (qlab, qg) in zip(axes[0], qdf.groupby("period")):
         mg = mdf[mdf.q == qlab]
         if mg.empty:
@@ -430,6 +544,8 @@ def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
         c_m = mg.pivot_table(index="chip_id", columns="period", values="clear_frac")
         q_idx = qg.set_index("chip_id")
         common = p_m.index.intersection(q_idx.index)
+        # >> Balanced: observed in all 3 months (row-wise all) AND in the quarter
+        # >> composite.
         ok = (c_m.loc[common].ge(TAU_OBSERVED).all(axis=1)
               & (q_idx.loc[common, "clear_frac"] >= TAU_OBSERVED))
         ids = common[ok]
@@ -440,18 +556,22 @@ def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
         pm_mean = p_m.loc[ids].mean(axis=1)
         pm_max = p_m.loc[ids].max(axis=1)
 
+        # >> Spearman rank correlation of quarterly vs mean monthly probability.
         rho = stats.spearmanr(pq, pm_mean).statistic
         mae = float((pq - pm_mean).abs().mean())
         # classification agreement at T_MAIN: quarterly vs monthly-mean and monthly-any
         yq = pq > T_MAIN
         ym_mean = pm_mean > T_MAIN
         ym_any = pm_max > T_MAIN
+        # >> Cohen's kappa: 1 = perfect agreement, 0 = no better than chance.
         kappa_mean = cohens_kappa(yq, ym_mean)
         kappa_any = cohens_kappa(yq, ym_any)
 
         # footprint IoU (dissolved geometries, quarterly vs monthly variants)
         qpos = qg[qg.chip_id.isin(ids) & (qg.prob > T_MAIN)]
         month_pos_any = mg[mg.chip_id.isin(ids) & (mg.prob > T_MAIN)]
+        # >> IoU = area(intersection) / area(union) of the two dissolved footprints, 0 to
+        # >> 1.
         iou_any = geo_iou(qpos, month_pos_any)
 
         rows.append({"quarter": qlab, "n_balanced_chips": len(ids),
@@ -467,10 +587,12 @@ def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
         ax.set_xlabel("mean of 3 monthly probs"); ax.set_ylabel("quarterly prob")
         ax.set_title(qlab)
     fig.tight_layout()
+    # >> FILE WRITE: figs/fig_E_mq_scatter.png.
     fig.savefig(figs / "fig_E_mq_scatter.png", dpi=150); plt.close(fig)
 
     if rows:
         tab = pd.DataFrame(rows)
+        # >> FILE WRITE: tables/mq_consistency.csv.
         tab.to_csv(tables / "mq_consistency.csv", index=False)
         rep.table(tab)
         rep.add("![mq](figs/fig_E_mq_scatter.png)", "",
@@ -483,6 +605,11 @@ def section_consistency(df: gpd.GeoDataFrame, rep: Report, figs: Path,
                 "quarterly anchors in the econometric model.", "")
 
 
+# >> What: agreement between two yes/no labelings, corrected for chance agreement. kappa =
+# >> (po - pe) / (1 - pe); po = observed agreement, pe = agreement expected if the two
+# >> labelings were independent with the same positive rates.
+# >> Out: float in [-1, 1]; NaN when pe == 1 (both all-yes or both all-no). Used in
+# >> section E.
 def cohens_kappa(a: pd.Series, b: pd.Series) -> float:
     """Cohen's κ for two boolean vectors (no sklearn dependency)."""
     a = np.asarray(a, bool); b = np.asarray(b, bool)
@@ -491,6 +618,9 @@ def cohens_kappa(a: pd.Series, b: pd.Series) -> float:
     return float((po - pe) / (1 - pe)) if pe < 1 else np.nan
 
 
+# >> What: how much two mapped footprints overlap (intersection over union), 0 to 1.
+# >> Both reprojected to UTM 19S metres, dissolved (union_all), then areas compared.
+# >> Both empty -> NaN; one empty -> 0.0. Used in section E.
 def geo_iou(g1: gpd.GeoDataFrame, g2: gpd.GeoDataFrame) -> float:
     """IoU of two dissolved chip-footprints in metric CRS."""
     if len(g1) == 0 and len(g2) == 0:
@@ -507,6 +637,13 @@ def geo_iou(g1: gpd.GeoDataFrame, g2: gpd.GeoDataFrame) -> float:
 # ----------------------------------------------------------------------------#
 # F. within-quarter noise bound                                               #
 # ----------------------------------------------------------------------------#
+# >> What (F): how much a chip's score jumps between the 3 months of a quarter.
+# >> Assumes real mining extent barely changes within a quarter, so the spread is mostly
+# >> noise (hence an upper bound on noise).
+# >> Per quarter: median and 90th percentile of the per-chip sd of the 3 monthly probs,
+# >> within-quarter flip rate at t = 0.4, and the sd for chips the quarter scores < 0.1 or
+# >> above 0.9 (confident chips, where spread is almost surely noise).
+# >> Writes tables/within_quarter_noise.csv.
 def section_noise(df: pd.DataFrame, rep: Report, tables: Path):
     rep.add("## F. Within-quarter dispersion: an upper bound on monthly noise", "",
             "IDENTIFYING ASSUMPTION (state it, defend it, doubt it): true mining "
@@ -523,16 +660,21 @@ def section_noise(df: pd.DataFrame, rep: Report, tables: Path):
     for qlab, mg in mdf.groupby("q"):
         p = mg.pivot_table(index="chip_id", columns="period", values="prob")
         c = mg.pivot_table(index="chip_id", columns="period", values="clear_frac")
+        # >> Need all 3 months of the quarter present as columns.
         if p.shape[1] < 3:
             continue
         ok = c.ge(TAU_OBSERVED).all(axis=1)
         p = p.loc[ok]
         if p.empty:
             continue
+        # >> Per-chip sample standard deviation across its 3 months (ddof=1).
         sd = p.std(axis=1, ddof=1)
+        # >> Positives count 0 or 3 -> stable; 1 or 2 -> class flipped within the quarter.
         flip = ((p.gt(T_MAIN).sum(axis=1) % 3) != 0)  # not 0/3 or 3/3 positive
         # stratify by the quarterly score where available (confident vs ambiguous)
         try:
+            # >> Quarterly prob per chip; any missing (chip, quarter) key -> all NaN for
+            # >> this quarter.
             pq = qdf.loc[[(i, qlab) for i in p.index], "prob"].to_numpy()
         except KeyError:
             pq = np.full(len(p), np.nan)
@@ -548,6 +690,7 @@ def section_noise(df: pd.DataFrame, rep: Report, tables: Path):
         })
     if rows:
         tab = pd.DataFrame(rows)
+        # >> FILE WRITE: tables/within_quarter_noise.csv.
         tab.to_csv(tables / "within_quarter_noise.csv", index=False)
         rep.table(tab)
         rep.add("`flip_rate_within_q` = share of balanced chips whose "
@@ -566,6 +709,11 @@ def section_noise(df: pd.DataFrame, rep: Report, tables: Path):
 # ----------------------------------------------------------------------------#
 # G. threshold sensitivity                                                    #
 # ----------------------------------------------------------------------------#
+# >> What (G): how much the answer depends on the chosen score threshold.
+# >> Per period: share of observed chips within 0.05 of t = 0.4 (fragile chips), and the
+# >> dissolved area at each threshold 0.30-0.60 (step 0.05).
+# >> Writes tables/threshold_sensitivity.csv and figs/fig_G_threshold.png.
+# >> More near-threshold mass in monthly than quarterly = sign of noisier inputs.
 def section_threshold(df: gpd.GeoDataFrame, rep: Report, figs: Path,
                       tables: Path):
     rep.add("## G. Threshold sensitivity", "")
@@ -578,6 +726,7 @@ def section_threshold(df: gpd.GeoDataFrame, rep: Report, figs: Path,
             r[f"area_t{t}"] = dissolved_area_km2(obs[obs.prob > t])
         rows.append(r)
     tab = pd.DataFrame(rows)
+    # >> FILE WRITE: tables/threshold_sensitivity.csv.
     tab.to_csv(tables / "threshold_sensitivity.csv", index=False)
 
     mean_near = tab.groupby("cadence")["share_near_threshold"].mean()
@@ -595,6 +744,7 @@ def section_threshold(df: gpd.GeoDataFrame, rep: Report, figs: Path,
         ax.plot(T_GRID, areas, "o-", label=f"{cad} (mean over periods)")
     ax.set_xlabel("threshold t"); ax.set_ylabel("mean detected area km²")
     ax.set_title("Area vs threshold"); ax.legend(); fig.tight_layout()
+    # >> FILE WRITE: figs/fig_G_threshold.png.
     fig.savefig(figs / "fig_G_threshold.png", dpi=150); plt.close(fig)
     rep.add("![thresh](figs/fig_G_threshold.png)", "")
 
@@ -602,6 +752,11 @@ def section_threshold(df: gpd.GeoDataFrame, rep: Report, figs: Path,
 # ----------------------------------------------------------------------------#
 # H. precision vs number of clear scenes                                      #
 # ----------------------------------------------------------------------------#
+# >> What (H): are monthly scores cleaner when more clear scenes went into the median?
+# >> Uses chips the quarter scores < 0.1 (treated as known negatives), observed in the
+# >> month, binned by n_clear_mean (1-2, 2-3, 3-5, 5-8, 8+ scenes).
+# >> Per bin: count, 95th percentile and mean prob, share above 0.4 (false-positive rate).
+# >> Writes tables/noise_vs_nclear.csv. A decline supports n_clear as a precision weight.
 def section_nclear(df: pd.DataFrame, rep: Report, tables: Path):
     rep.add("## H. Does composite precision rise with clear-scene count?", "",
             "Mechanism: the median over k clear scenes has sampling variance "
@@ -611,13 +766,17 @@ def section_nclear(df: pd.DataFrame, rep: Report, tables: Path):
             "— for these, monthly variation is interpretable as noise.", "")
     mdf = df[df.cadence == "monthly"].assign(
         q=lambda d: d.period.map(quarter_of_month))
+    # >> Quarterly negatives: (chip_id, quarter) pairs with quarterly prob < 0.1.
     qneg = (df[(df.cadence == "quarterly") & (df.prob < 0.1)]
             [["chip_id", "period"]].rename(columns={"period": "q"}))
+    # >> Inner join: keep monthly rows whose chip was a quarterly negative that quarter.
     sub = mdf.merge(qneg, on=["chip_id", "q"], how="inner")
     sub = sub[sub.clear_frac >= TAU_OBSERVED]
     if sub.empty:
         rep.add("_No quarterly-confident negatives with observed months — skipped._", "")
         return
+    # >> Bins are left-closed [1, 2), [2, 3), ...; gotcha: n_clear_mean < 1 gets no bin
+    # >> (dropped).
     bins = [1, 2, 3, 5, 8, np.inf]
     labels = ["1-2", "2-3", "3-5", "5-8", "8+"]
     sub = sub.assign(nclear_bin=pd.cut(sub.n_clear_mean, bins=bins,
@@ -628,6 +787,7 @@ def section_nclear(df: pd.DataFrame, rep: Report, tables: Path):
                    mean_prob=("prob", "mean"),
                    share_above_t=("prob", lambda s: float(np.mean(s > T_MAIN))))
               .reset_index())
+    # >> FILE WRITE: tables/noise_vs_nclear.csv.
     tab.to_csv(tables / "noise_vs_nclear.csv", index=False)
     rep.table(tab)
     rep.add("`p95_prob` and `share_above_t` on known-negative chips are "
@@ -640,6 +800,11 @@ def section_nclear(df: pd.DataFrame, rep: Report, tables: Path):
 # ----------------------------------------------------------------------------#
 # implications + limitations (written text, filled by the numbers above)      #
 # ----------------------------------------------------------------------------#
+# >> What (I/J): fixed text of conclusions and limitations for the econometric stage.
+# >> Only the month count and the number of years are taken from the data.
+# >> Key points: never read a low score with low clear_frac as zero; missingness is
+# >> seasonal (MNAR = missing not at random); use the continuous prob; difference balanced
+# >> chips only.
 def section_implications(rep: Report, df: pd.DataFrame | None = None):
     # The limitation text below quotes the number of monthly periods. Derive it from the
     # data rather than hardcoding 12, so a multi-year run does not silently ship a false
@@ -649,6 +814,7 @@ def section_implications(rep: Report, df: pd.DataFrame | None = None):
     if df is not None and "period" in df:
         months = df.loc[df.cadence == "monthly", "period"].unique()
         n_months = len(months)
+        # >> Distinct years from month labels: 'm2025-01' -> '2025'.
         n_years = len({m[1:5] for m in months if MONTH_RE.match(m)}) or 1
     scope = ("one year" if n_years == 1
              else f"{n_years} years")
@@ -698,6 +864,10 @@ def section_implications(rep: Report, df: pd.DataFrame | None = None):
 # ----------------------------------------------------------------------------#
 # main                                                                        #
 # ----------------------------------------------------------------------------#
+# >> What: command-line entry; loads data, runs sections A-J in order, writes REPORT.md.
+# >> Defaults: data/timeseries/{panels,tiles,analysis}; run_staged.sh passes its run
+# >> folders.
+# >> Each section is wrapped in try/except, so one failure becomes a note, not a crash.
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--panels_dir", type=Path,
@@ -710,6 +880,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s: %(message)s")
+    # >> Create the output folders figs/ and tables/.
     figs = args.out_dir / "figs"; figs.mkdir(parents=True, exist_ok=True)
     tables = args.out_dir / "tables"; tables.mkdir(parents=True, exist_ok=True)
 
@@ -730,6 +901,7 @@ def main() -> int:
 
     # Each section is independent: a failure (e.g. smoke-test data with one
     # period) degrades to a note in the report instead of killing the run.
+    # >> Section C's table is stored on main._ser so section D can reuse it.
     sections = [
         ("A", lambda: section_coverage(df, rep, figs, tables)),
         ("B", lambda: section_fill_check(tile_stats, rep)),
@@ -749,6 +921,7 @@ def main() -> int:
             log.exception("Section %s failed", name)
             rep.add(f"_Section {name} failed: {e!r} — see log._", "")
 
+    # >> FILE WRITE: <out_dir>/REPORT.md.
     rep.write(args.out_dir / "REPORT.md")
     return 0
 

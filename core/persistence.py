@@ -37,6 +37,14 @@ yet have. Provisional detections may be withdrawn; confirmed ones are not.
 """
 from __future__ import annotations
 
+# >> FILE OVERVIEW
+# >> Turns per-period detections into the cumulative mining record: a chip is CONFIRMED
+# >> only if it is detected again soon after (k=2 detections in a 2-year window).
+# >> Pipeline: postprocessed_t0.43_*/ (+ Andes supplemental) -> THIS -> cumulative/
+# >> (first-detection layer, per-period cumulatives, patch_diffs = SAM2 prompts) and
+# >> cumulative_dissolved/ (polygons).
+# >> Called by scripts/pipeline.py:stage_persist_detections.
+# >> Upstream Amazon Mining Watch file (byte-identical to upstream).
 import argparse
 import re
 from dataclasses import dataclass, field
@@ -46,6 +54,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+# >> pyproj.Geod = distances/areas measured on the curved Earth (WGS84 ellipsoid).
 from pyproj import Geod
 
 try:
@@ -55,13 +64,18 @@ except ImportError:
     from postprocess import (PostprocessConfig, centroid_key, dedupe_detections,
                              dissolve_patches)
 
+# >> A location ID: (x, y) chip centre rounded to 5 decimals (postprocess.centroid_key).
 LocKey = Tuple[float, float]
 
 # Period vocabulary lives in periods.py -- a leaf module, so asking what dates a
 # quarter spans does not import the geospatial stack. Re-exported here because
 # `from persistence import Period` is the established import across the repo.
+# >> Period = one annual (e.g. 2021) or quarterly (e.g. Q125 = Q1 2025) time slice.
+# >> Gotcha: upstream periods.py date_span ends on 12-31 / 03-31 etc., and the EE end date
+# >> is exclusive, so the last day of each period is never imaged.
 from periods import (QUARTER_SPANS, QUARTER_TAG_RE,  # noqa: F401
                      Period, encode_period)
+# >> Shared filename contract (base folder, model name, raw threshold tags).
 from pipeline_config import ANDES_TAG, BASE, MODEL, RAW_TAG
 
 
@@ -69,6 +83,9 @@ from pipeline_config import ANDES_TAG, BASE, MODEL, RAW_TAG
 # configuration
 # --------------------------------------------------------------------------
 
+# >> The confirmation rule settings (Recipe A by default).
+# >> k=2, window=2 years, annual periods only. Example: chip seen in 2021 and 2022 ->
+# >> onset 2021, confirmed_in 2022. Seen only in 2021 -> not confirmed.
 @dataclass
 class PersistenceConfig:
     """The confirmation rule, and how the provisional edge is represented."""
@@ -76,6 +93,7 @@ class PersistenceConfig:
     #: Detections required within the window, counting the onset period itself.
     #: k=3 would drop sites in cloud-wrecked years and short-lived operations
     #: that partly heal; k=2 is the working value.
+    # >> k = 2 detections needed inside the window (the onset year counts as one).
     k: int = 2
 
     #: Window length in *years*, including the onset year. window=2 with k=2 is
@@ -83,33 +101,42 @@ class PersistenceConfig:
     #: timeliness and on review of the difference set -- see the planning doc,
     #: "Decision: recipe A". Less stringent than it looks: a cumulative record
     #: offers a mine every adjacent pair of years, not one designated window.
+    # >> window = 2 years: onset year Y plus Y+1.
     window: int = 2
 
     #: Whether quarterly periods inside the window count as corroborating
     #: witnesses. Quarterly cloud loss is seasonal rather than random, so
     #: quarters bias towards dry-season-visible ground; with k=2 a single clear
     #: look suffices, which blunts but does not remove that bias.
+    # >> False: quarterly mosaics cannot corroborate (cloudier, seasonal bias).
     use_quarterly_witnesses: bool = False
 
     #: Confirm using whatever periods exist, without waiting for the window to
     #: close. Safe: the witness set only grows towards a fixed endpoint, so
     #: confirmations accumulate monotonically and are never withdrawn -- but the
     #: answer keeps changing until the window closes.
+    # >> False: wait until every year in the window exists before deciding.
     early_confirm: bool = False
 
     #: Also evaluate every shorter window and take the earliest onset. Shorter
     #: windows yield a strict subset of longer ones, so this only ever confirms
     #: sooner, never differently. Off by default.
+    # >> False: do not also try shorter windows.
     nested: bool = False
 
     #: Instantaneous threshold standing in for temporal evidence on periods too
     #: recent to resolve. Count-matched against eventual confirmation, 0.50-0.53
     #: fits 2018-2023 better than the 0.55 inherited from the old cumulative.
+    # >> t_prov 0.55 = stricter single-look threshold used for periods too recent to be
+    # >> confirmed (e.g. the latest year, whose Y+1 does not exist yet).
     t_prov: float = 0.55
 
     #: Join key precision for "same location, different period".
+    # >> Location-key precision: 5 decimals, same as postprocess.
     centroid_decimals: int = PostprocessConfig.centroid_decimals
 
+    # >> Lists which periods count as witnesses for a given onset year.
+    # >> With window=2 and onset 2021: annual periods with year 2021 or 2022.
     def witness_periods(self, onset: Period, available: Sequence[Period]) -> List[Period]:
         """Periods that may corroborate an onset at ``onset``."""
         last_year = onset.year + self.window - 1
@@ -117,6 +144,8 @@ class PersistenceConfig:
                 if onset.year <= p.year <= last_year
                 and (p.is_annual or self.use_quarterly_witnesses)]
 
+    # >> True if all annual years the window needs are loaded (e.g. 2021 needs 2021+2022).
+    # >> Only annual periods count here, even when quarterly witnesses are allowed.
     def window_is_closed(self, onset: Period, available: Sequence[Period]) -> bool:
         """True once every annual period the window needs is in hand."""
         needed = {onset.year + d for d in range(self.window)}
@@ -128,6 +157,9 @@ class PersistenceConfig:
 # loading
 # --------------------------------------------------------------------------
 
+# >> Builds the path of one postprocessed detection file, e.g.
+# >> postprocessed_t0.43_d5_3km_t-iso0.75/<stem>_2021-01-01_2021-12-31_t0.43_...geojson.
+# >> Must match what postprocess.py:default_outpath + pipeline.py produce.
 def detection_path(base: Path, period: Period, *, region_stem: str,
                    t_main: float, t_iso: float, k: int = 5,
                    isolation_km: float = 3.0) -> Path:
@@ -137,6 +169,8 @@ def detection_path(base: Path, period: Period, *, region_stem: str,
     return folder / f"{region_stem}_{period.date_span}_{tag}.geojson"
 
 
+# >> Path of the Andes supplemental detections for a period (written by
+# >> scripts/geo_filter.py via pipeline stage_filter), or None if the file is absent.
 def supplemental_path(base: Path, period: Period, *, stem: str,
                       threshold: str, subdir: str) -> Optional[Path]:
     """Path to the Andes supplemental detections for ``period``, if present."""
@@ -144,6 +178,10 @@ def supplemental_path(base: Path, period: Period, *, stem: str,
     return path if path.is_file() else None
 
 
+# >> Reads one period's detections and tags each chip with its location key.
+# >> In: postprocessed GeoJSON (+ optional Andes file). Out: GeoDataFrame + _kx/_ky.
+# >> Andes rows overlap the main run, so they are merged and deduped (keep highest
+# >> confidence), exactly like the subregion seam duplicates.
 def load_period(path: Path, decimals: int,
                 supplemental: Optional[Path] = None) -> gpd.GeoDataFrame:
     """Read one period's detections, keyed by rounded patch centroid.
@@ -161,16 +199,20 @@ def load_period(path: Path, decimals: int,
     if supplemental is not None:
         extra = gpd.read_file(supplemental)
         gdf = gpd.GeoDataFrame(
+            # >> Stack main + Andes rows into one table.
             pd.concat([gdf, extra], ignore_index=True),
             crs=gdf.crs or extra.crs)
+        # >> Drop repeated chip locations, keeping the highest-confidence copy.
         gdf = dedupe_detections(gdf, decimals=decimals, verbose=False)
     if gdf.crs is None:
         gdf = gdf.set_crs("EPSG:4326")
+    # >> Attach the rounded-centre key used to match chips across periods.
     kx, ky = centroid_key(gdf, decimals=decimals)
     gdf = gdf.assign(_kx=kx, _ky=ky)
     return gdf
 
 
+# >> The set of location keys present in one period (for fast 'was it seen?' checks).
 def period_keys(gdf: gpd.GeoDataFrame) -> Set[LocKey]:
     return set(zip(gdf["_kx"], gdf["_ky"]))
 
@@ -179,6 +221,11 @@ def period_keys(gdf: gpd.GeoDataFrame) -> Set[LocKey]:
 # the rule
 # --------------------------------------------------------------------------
 
+# >> THE RULE: finds, for each location, its onset (first confirmed year).
+# >> In: {period: set of location keys}. Out: {loc: (onset, confirmed_in, n_witnesses)}.
+# >> Example (k=2, window=2): seen 2021 and 2022 -> (2021, 2022, 2).
+# >> Seen 2019, 2021, 2022 -> 2019 fails its window (2020 missing); onset 2021.
+# >> Only annual periods may be onsets. Stateless: same inputs always give same output.
 def compute_onsets(
     detected: Dict[Period, Set[LocKey]],
     config: PersistenceConfig,
@@ -194,27 +241,38 @@ def compute_onsets(
     against, and dating from them would make onset depend on which quarters
     happened to be clear.
     """
+    # >> Periods in time order (Period sorts by year then quarter).
     available = sorted(detected)
+    # >> Normally just one window length (2); 'nested' would try 2..window.
     windows = range(2, config.window + 1) if config.nested else (config.window,)
 
     best: Dict[LocKey, Tuple[Period, Period, int]] = {}
     for span in windows:
+        # >> A copy of the config with this window length.
         sub = PersistenceConfig(**{**config.__dict__, "window": span})
+        # >> Data order: each ANNUAL period, oldest first, is a candidate onset.
         for onset in [p for p in available if p.is_annual]:
+            # >> Skip onsets whose window is not complete yet (they stay provisional).
             if not config.early_confirm and not sub.window_is_closed(onset, available):
                 continue
             witnesses = sub.witness_periods(onset, available)
+            # >> Only chips detected IN the onset year can have that onset.
             for loc in detected[onset]:
+                # >> Periods in the window where this location was also detected.
                 seen = [p for p in witnesses if loc in detected[p]]
                 if len(seen) < config.k:
                     continue
+                # >> confirmed_in = period of the k-th sighting.
                 settled = sorted(seen)[config.k - 1]
                 prior = best.get(loc)
+                # >> Keep the earliest onset if several years qualify.
                 if prior is None or onset.sort_key < prior[0].sort_key:
                     best[loc] = (onset, settled, len(seen))
     return best
 
 
+# >> Annual periods whose window can be judged now (e.g. with 2018-2025 loaded and
+# >> window=2: 2018-2024; 2025 is not resolvable until 2026 exists).
 def resolvable_periods(available: Sequence[Period],
                        config: PersistenceConfig) -> List[Period]:
     """Annual periods whose confirmation window can be evaluated."""
@@ -227,6 +285,11 @@ def resolvable_periods(available: Sequence[Period],
 # assembly
 # --------------------------------------------------------------------------
 
+# >> Builds the master layer: one row per location, with onset and status.
+# >> Confirmed rows come from the t0.43 frames at their onset period; provisional rows
+# >> come from t_prov (0.55/0.8) frames of unresolvable periods, if not already confirmed.
+# >> Columns added: onset, onset_year, status, confirmed_in, n_witness.
+# >> Output feeds main() -> <stem>_detections.geojson and every cumulative layer.
 def build_first_detection_layer(
     frames: Dict[Period, gpd.GeoDataFrame],
     provisional: Dict[Period, gpd.GeoDataFrame],
@@ -238,21 +301,25 @@ def build_first_detection_layer(
     which is why the per-period cumulatives are redundant with it. Confirmed
     rows never move; provisional rows may be withdrawn or promoted.
     """
+    # >> Location-key sets per period, then run the rule.
     detected = {p: period_keys(g) for p, g in frames.items()}
     onsets = compute_onsets(detected, config)
 
     rows, seen = [], set()
+    # >> Loop over periods in time order; 'seen' stops a location being added twice.
     for period in sorted(frames):
         if period not in {o[0] for o in onsets.values()}:
             continue
         gdf = frames[period]
         keys = list(zip(gdf["_kx"], gdf["_ky"]))
+        # >> Rows of this period whose location has its onset exactly here.
         take = [i for i, key in enumerate(keys)
                 if key not in seen and onsets.get(key, (None,))[0] == period]
         if not take:
             continue
         sub = gdf.iloc[take].copy()
         meta = [onsets[k] for k in (keys[i] for i in take)]
+        # >> Label these rows as confirmed with their onset period.
         sub["onset"] = period.tag
         sub["onset_year"] = period.year
         sub["status"] = "confirmed"
@@ -261,6 +328,7 @@ def build_first_detection_layer(
         rows.append(sub)
         seen.update(keys[i] for i in take)
 
+    # >> Second pass: provisional rows from recent, not-yet-resolvable periods.
     for period in sorted(provisional):
         gdf = provisional[period]
         keys = list(zip(gdf["_kx"], gdf["_ky"]))
@@ -272,6 +340,7 @@ def build_first_detection_layer(
         sub["onset_year"] = period.year
         sub["status"] = "provisional"
         sub["confirmed_in"] = None
+        # >> Provisional = one sighting only (at the stricter t_prov threshold).
         sub["n_witness"] = 1
         rows.append(sub)
         seen.update(keys[i] for i in take)
@@ -279,11 +348,14 @@ def build_first_detection_layer(
     if not rows:
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
+    # >> Stack all pieces into one GeoDataFrame and drop the helper key columns.
     out = gpd.GeoDataFrame(pd.concat(rows, ignore_index=True),
                            crs=rows[0].crs)
     return out.drop(columns=["_kx", "_ky"])
 
 
+# >> Cumulative layer: every location with onset at or before `period`.
+# >> E.g. cumulative_through(layer, 2022) = all mines first confirmed 2018..2022.
 def cumulative_through(layer: gpd.GeoDataFrame, period: Period) -> gpd.GeoDataFrame:
     """Everything with an onset at or before ``period``."""
     order = {t: Period.parse(t).sort_key for t in layer["onset"].unique()}
@@ -291,6 +363,9 @@ def cumulative_through(layer: gpd.GeoDataFrame, period: Period) -> gpd.GeoDataFr
     return layer.loc[keep].reset_index(drop=True)
 
 
+# >> Chooses which periods get their own published cumulative layer.
+# >> Resolvable annual periods, then (for the recent edge) quarters where they exist,
+# >> else that year's annual. An annual year covered by quarters is only a witness.
 def published_periods(periods: Sequence[Period],
                       config: PersistenceConfig) -> List[Period]:
     """The periods that become published layers, in order.
@@ -318,6 +393,11 @@ def published_periods(periods: Sequence[Period],
     return sorted(set(out))
 
 
+# >> Writes one cumulative chip layer per period (+ each period's new chips).
+# >> Files: <stem>_cumulative<start>-<tag>.geojson and
+# >> patch_diffs/<stem>_growth_<tag>.geojson,
+# >> GeoJSON at 6 decimals. patch_diffs are the SAM2 prompts for quarterly masks.
+# >> Returns (period, total rows, confirmed rows) per period for the log table.
 def write_cumulative_series(layer: gpd.GeoDataFrame,
                             periods: Sequence[Period],
                             outdir: Path,
@@ -353,14 +433,17 @@ def write_cumulative_series(layer: gpd.GeoDataFrame,
         (outdir / "patch_diffs").mkdir(exist_ok=True)
     start = min(periods).year
     summary = []
+    # >> Loop in published-period order; each file includes all earlier onsets.
     for period in periods:
         cumulative = cumulative_through(layer, period)
         if cumulative.empty:
             continue
+        # >> File write: cumulative chips up to this period.
         cumulative.to_file(
             outdir / f"{stem}_cumulative{start}-{period.tag}.geojson",
             driver="GeoJSON", index=False, COORDINATE_PRECISION=precision)
         if patch_diffs:
+            # >> File write: only the chips whose onset is this period (the growth).
             increment = layer.loc[layer["onset"] == period.tag].reset_index(drop=True)
             increment.to_file(
                 outdir / "patch_diffs" / f"{stem}_growth_{period.tag}.geojson",
@@ -370,6 +453,9 @@ def write_cumulative_series(layer: gpd.GeoDataFrame,
     return summary
 
 
+# >> Area of each polygon in hectares, measured on the WGS84 ellipsoid.
+# >> Uses pyproj.Geod.geometry_area_perimeter (works on lon/lat directly).
+# >> abs() because the sign depends on ring winding order; / 1e4 converts m^2 -> ha.
 def polygon_area_ha(gdf: gpd.GeoDataFrame) -> np.ndarray:
     """Geodesic area of each polygon, in hectares.
 
@@ -377,16 +463,25 @@ def polygon_area_ha(gdf: gpd.GeoDataFrame) -> np.ndarray:
     scripts/boundaries: exact on the ellipsoid at any longitude, with no zone
     bookkeeping to get wrong.
     """
+    # >> Geodesic calculator on the WGS84 ellipsoid (the Earth shape GPS uses).
     geod = Geod(ellps="WGS84")
     return np.array([abs(geod.geometry_area_perimeter(g)[0]) / 1e4
                      for g in gdf.geometry])
 
 
+# >> Writes dissolved (merged-polygon) cumulatives per period, plus yearly growth.
+# >> Growth = this period's cumulative polygons MINUS the previous union (geometric
+# >> difference), so growth pieces do not overlap earlier years.
+# >> Files: <stem>_cumulative<start>-<tag>-dissolved.geojson and
+# >> diffs/<stem>_growth_<tag>-dissolved.geojson. Growth pieces <= 11 ha are dropped.
 def write_dissolved_series(layer: gpd.GeoDataFrame,
                            periods: Sequence[Period],
                            outdir: Path,
                            stem: str,
+                           # >> 11.0 ha (~half a 23 ha chip):
+                           # >> smaller growth slivers are dropped.
                            min_polygon_ha: float = 11.0,
+                           # >> Dissolve buffer in DEGREES (1e-5 ~ 1.1 m).
                            buffer_deg: float = PostprocessConfig.dissolve_buffer_deg,
                            precision: int = PostprocessConfig.coordinate_precision
                            ) -> List[Tuple[Period, int, int]]:
@@ -423,23 +518,28 @@ def write_dissolved_series(layer: gpd.GeoDataFrame,
         cumulative = cumulative_through(layer, period)
         if cumulative.empty:
             continue
+        # >> Buffered dissolve of all chips so far (mean confidence per polygon).
         dissolved = dissolve_patches(cumulative, buffer_deg=buffer_deg)
+        # >> File write: dissolved cumulative (NOT area-filtered).
         dissolved.to_file(
             outdir / f"{stem}_cumulative{start}-{period.tag}-dissolved.geojson",
             driver="GeoJSON", index=False, COORDINATE_PRECISION=precision)
 
         increment = dissolved.copy()
         if previous is not None:
+            # >> Growth = new polygons minus everything that existed before.
             increment.geometry = dissolved.geometry.difference(previous)
             increment = increment.loc[~increment.geometry.is_empty]
             increment = increment.explode(index_parts=False).reset_index(drop=True)
 
+        # >> Increment status: confirmed or provisional ('mixed' only if early_confirm).
         statuses = set(layer.loc[layer["onset"] == period.tag, "status"])
         increment["onset"] = period.tag
         increment["onset_year"] = period.year
         increment["status"] = statuses.pop() if len(statuses) == 1 else "mixed"
 
         if min_polygon_ha and len(increment):
+            # >> Geodesic area per growth piece, hectares.
             increment["area_ha"] = polygon_area_ha(increment)
             keep = increment["area_ha"] > min_polygon_ha
             dropped = int((~keep).sum())
@@ -449,10 +549,12 @@ def write_dissolved_series(layer: gpd.GeoDataFrame,
                       f"({increment.loc[~keep, 'area_ha'].sum():,.0f} ha)")
             increment = increment.loc[keep].reset_index(drop=True)
 
+        # >> File write: growth polygons for this period.
         increment.to_file(
             outdir / "diffs" / f"{stem}_growth_{period.tag}-dissolved.geojson",
             driver="GeoJSON", index=False, COORDINATE_PRECISION=precision)
 
+        # >> Remember the union so the next period's growth excludes it.
         previous = dissolved.geometry.union_all()
         summary.append((period, len(dissolved), len(increment)))
     return summary
@@ -462,6 +564,9 @@ def write_dissolved_series(layer: gpd.GeoDataFrame,
 # CLI
 # --------------------------------------------------------------------------
 
+# >> CLI entry: load all periods, build the first-detection layer, write the series.
+# >> Reads postprocessed files under --base; writes <base>/cumulative/ and
+# >> <base>/cumulative_dissolved/ (with --dissolve, as pipeline.py passes).
 def main(args: argparse.Namespace) -> None:
     config = PersistenceConfig(
         k=args.k, window=args.window,
@@ -470,6 +575,7 @@ def main(args: argparse.Namespace) -> None:
         t_prov=args.t_prov)
 
     base = Path(args.base)
+    # >> Parse --years and --quarters into Period objects and sort them in time order.
     periods = [Period.parse(t) for t in list(args.years) + list(args.quarters)]
     periods.sort()
 
@@ -481,6 +587,7 @@ def main(args: argparse.Namespace) -> None:
     # the 2025 annual adds 27,910 locations to Q126 that its own quarters are
     # supposed to be introducing progressively.
     publishable = set(published_periods(periods, config))
+    # >> Loop: load every period (main t0.43 file + Andes), plus t_prov files when needed.
     for p in periods:
         path = detection_path(base, p, region_stem=args.region_stem,
                               t_main=args.t_main, t_iso=args.t_iso)
@@ -489,9 +596,12 @@ def main(args: argparse.Namespace) -> None:
         supp = None if args.no_supplemental else supplemental_path(
             base, p, stem=args.supplemental_stem,
             threshold=args.supplemental_threshold, subdir=args.supplemental_dir)
+        # >> Main frames: the t0.43 / 0.75 detections (the witnesses).
         frames[p] = load_period(path, config.centroid_decimals, supp)
+        # >> Resolvable or withheld periods get no provisional layer.
         if p in resolvable or p not in publishable:
             continue
+        # >> Provisional frames: the t_prov (0.55 / 0.8) file for this period.
         prov_path = detection_path(base, p, region_stem=args.region_stem,
                                    t_main=config.t_prov, t_iso=args.t_prov_iso)
         if prov_path.is_file():
@@ -502,6 +612,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"{len(frames)} periods, {len(resolvable)} resolvable under "
           f"k={config.k} window={config.window} witnesses={args.witnesses}")
 
+    # >> Build the master one-row-per-location layer.
     layer = build_first_detection_layer(frames, provisional, config)
     # Derived from --base rather than defaulted literally, so pointing at a
     # different model writes that model's cumulative, not this one's.
@@ -512,9 +623,11 @@ def main(args: argparse.Namespace) -> None:
     # and which thresholds produced it is recorded by the postprocessed_* folder
     # names archived alongside.
     stem = args.region_stem
+    # >> Strip threshold tags from the stem, e.g. '..._0.40' -> product name without it.
     for suffix in (f"_{args.t_main:g}", "_0.40"):
         stem = stem.replace(suffix, "")
 
+    # >> File write: the first-detection layer (confirmed + provisional), GeoJSON 6 dp.
     dest = out / f"{stem}_detections.geojson"
     layer.to_file(dest, driver="GeoJSON", index=False,
                   COORDINATE_PRECISION=PostprocessConfig.coordinate_precision)
@@ -532,11 +645,13 @@ def main(args: argparse.Namespace) -> None:
         print(f"  witnesses not published as layers: {', '.join(withheld)}")
 
     print(f"\n{'period':>8} {'patches':>10} {'confirmed':>11} {'provisional':>12}")
+    # >> Write chip cumulatives and print the per-period table.
     for period, total, conf in write_cumulative_series(
             layer, published, out, stem, patch_diffs=args.patch_diffs):
         print(f"{period.tag:>8} {total:>10,} {conf:>11,} {total - conf:>12,}")
     print(f"\n  series -> {out}")
 
+    # >> Optional polygons: writes to a sibling folder <outdir>_dissolved.
     if args.dissolve:
         dissolved_out = out.with_name(f"{out.name}_dissolved")
         print(f"\n{'period':>8} {'polygons':>10} {'increment':>11}")
@@ -548,6 +663,7 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
+    # >> Command-line options. Defaults = Recipe A and the LOOSE postprocess pair.
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     defaults = PersistenceConfig()
@@ -573,6 +689,7 @@ if __name__ == "__main__":
     parser.add_argument("--t-iso", dest="t_iso", type=float,
                         default=PostprocessConfig.t_iso)
     parser.add_argument("--t-prov", dest="t_prov", type=float, default=defaults.t_prov)
+    # >> t_prov_iso 0.8 = the isolated-chip bar of the provisional (stringent) files.
     parser.add_argument("--t-prov-iso", dest="t_prov_iso", type=float, default=0.8)
     parser.add_argument("--outdir", default=None,
                         help=("Published product directory; defaults to "
@@ -593,6 +710,7 @@ if __name__ == "__main__":
     parser.add_argument("--dissolve", action="store_true",
                         help=("Also write dissolved cumulative polygons and their "
                               "geometric yearly increments to <outdir>_dissolved/"))
+    # >> 11 ha minimum area for published growth polygons.
     parser.add_argument("--min-polygon-ha", dest="min_polygon_ha", type=float,
                         default=11.0,
                         help="Drop increment polygons at or below this area (0 disables)")

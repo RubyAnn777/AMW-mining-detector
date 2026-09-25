@@ -37,16 +37,32 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+# >> FILE OVERVIEW: one-off migration script (upstream AMW). Old (Aug 2026) SAM2 runs
+# >> saved logits WITHOUT the Gaussian smoothing, so "logits > 0" did not equal the mask.
+# >> This rewrites each -logits.tif as the smoothed version, keeps the original in a
+# >> sibling "<dir>-logits-unsmoothed/" folder, and checks the result against the tile's
+# >> -msk.tif. Not part of scripts/pipeline.py. "logit" = log-odds score; > 0 means likely
+# >> mine.
 REPO = Path(__file__).resolve().parent.parent
+# >> Make core/ importable so we can reuse sam2_logits helpers.
 sys.path.insert(0, str(REPO / "core"))
 
+# >> Gotcha: MASK_NODATA is imported but never used.
 from sam2_logits import (DEFAULT_SMOOTHING_SIGMA, MASK_NODATA, mask_from_logits,
                          smooth_logits)
 
+# >> All SAM2 run folders live under data/outputs/sam2/.
 SAM2_ROOT = REPO / "data/outputs/sam2"
+# >> Name ending of the backup folder holding the original (unsmoothed) logits.
 SUFFIX = "-logits-unsmoothed"
 
 
+# >> Converts one run folder: move originals aside, write smoothed float32 copies back at
+# >> the same paths, verify each against its mask. Returns a stats dict (tiles, converted,
+# >> verified, mismatched, no_mask, bad messages). Uses shutil.move, rasterio,
+# >> sam2_logits.smooth_logits / mask_from_logits. Gotcha: no check that the logits are
+# >> actually unsmoothed. Run it on an already-smoothed folder (with an empty or deleted
+# >> stash) and it smooths a second time.
 def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
     tile_dir = Path(tile_dir)
     logits = sorted(glob.glob(str(tile_dir / "*-logits.tif")))
@@ -55,9 +71,13 @@ def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
                  verified=0, mismatched=0, no_mask=0, bad=[])
     if not logits:
         return stats
+    # >> Safety: refuse if the backup folder already has files (avoids overwriting
+    # >> originals).
     if stash.exists() and any(stash.iterdir()):
         stats["bad"].append(f"{stash.name} already populated; refusing")
         return stats
+    # >> Gotcha: --dry-run returns here, before the grid-size check below, so a dry run
+    # >> cannot reveal a pre-upsample folder.
     if dry_run:
         return stats
 
@@ -66,6 +86,8 @@ def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
     # neither the old field nor the new one -- they need an upsample as well,
     # which cannot be reproduced outside the original torch path. Detect by
     # co-registration rather than by date, since the folder name proves nothing.
+    # >> Only the FIRST logits file is checked for the old coarse grid (35/32 of mask
+    # >> size).
     probe = Path(logits[0])
     probe_mask = probe.with_name(probe.name.replace("-logits.tif", "-msk.tif"))
     if probe_mask.exists():
@@ -76,16 +98,21 @@ def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
                     " -- pre-upsample vintage, skipping")
                 return stats
 
+    # >> Create the backup folder, then loop over every logits file in sorted order.
     stash.mkdir(parents=True, exist_ok=True)
     for src in logits:
         src = Path(src)
         moved = stash / src.name
+        # >> Move original -> backup. If the script dies mid-loop, some tiles are moved
+        # >> but not rewritten, and a re-run refuses because the stash is no longer empty.
         shutil.move(str(src), str(moved))
 
         with rasterio.open(moved) as ds:
             profile = ds.profile
             unsmoothed = ds.read(1)
+        # >> Gaussian blur (sigma 2.5 px by default), NaN-aware; cast back to float32.
         smoothed = smooth_logits(unsmoothed, sigma).astype("float32")
+        # >> File write: same profile (grid, CRS, compression, nodata) as the original.
         with rasterio.open(src, "w", **profile) as dst:
             dst.write(smoothed, 1)
         stats["converted"] += 1
@@ -97,6 +124,8 @@ def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
             continue
         with rasterio.open(mask_path) as ds:
             mask = ds.read(1)
+        # >> Acceptance test: (smoothed > 0) must equal (mask == 1) exactly, pixel for
+        # >> pixel.
         derived = mask_from_logits(smoothed, as_uint8=True)
         if np.array_equal(derived == 1, mask == 1):
             stats["verified"] += 1
@@ -108,6 +137,8 @@ def convert_dir(tile_dir: Path, sigma: float, dry_run: bool) -> dict:
     return stats
 
 
+# >> CLI: convert each folder given (or every SAM2 run with --all-sam2), print a table,
+# >> exit with an error if any tile fails the acceptance test.
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -141,6 +172,7 @@ def main() -> None:
     print(f"\n{total['tiles']:,} tiles, {total['converted']:,} converted, "
           f"{total['verified']:,} verified, {total['mismatched']:,} mismatched, "
           f"{total['no_mask']:,} without a mask")
+    # >> Any mismatch = hard failure, so nobody deletes the backups by mistake.
     if total["mismatched"]:
         raise SystemExit("MISMATCHES: thresholding the converted logits does not "
                          "reproduce the mask; do not delete the originals")

@@ -39,20 +39,38 @@ from typing import Optional
 import numpy as np
 import scipy.ndimage as ndi
 
+# >> FILE OVERVIEW: small shared helpers for SAM2 logit rasters (upstream AMW file).
+# >> "logit" = log-odds score; > 0 means SAM2 thinks the pixel is more likely mine than
+# >> not. Holds the single source of truth for smoothing sigma, clamp, threshold and mask
+# >> nodata, imported by inference_engine.MaskConfig, scripts/write_mask_config.py and
+# >> scripts/convert_logits_to_smoothed.py; sam2_persistence.py imports MASK_NODATA.
+# >> Gotcha: the docstring above says stored = smooth(clip(...)); new runs actually store
+# >> clip(smooth(...)) (inference_engine, "Clamp AFTER smoothing"). Only converted legacy
+# >> tiles are clip-first.
 #: Gaussian regularization applied to upsampled logits before thresholding.
 #: Single source of truth; ``MaskConfig.smoothing_sigma`` defaults to this.
+# >> Gaussian blur width in PIXELS of the upsampled ~10 m mask grid (2.5 px ~ 25 m).
 DEFAULT_SMOOTHING_SIGMA = 2.5
 
 #: Saturation limit (log-odds) for persisted logits. Lossless w.r.t. the mask.
+# >> Logits are capped to +/-16 log-odds (probability 1 - 1e-7): shrinks files, same mask.
 DEFAULT_LOGIT_CLAMP = 16.0
 
 #: Log-odds cutoff for the production mask (probability 0.5).
+# >> 0 log-odds = probability 0.5; the product mask is "logit > 0".
 PRODUCTION_THRESHOLD = 0.0
 
 #: uint8 sentinel for "not observed" in mask rasters.
+# >> Mask rasters use 0 = no mine, 1 = mine, 2 = not observed (nodata).
 MASK_NODATA = 2
 
 
+# >> Blurs a logit raster, ignoring NaN (unobserved) pixels instead of spreading them.
+# >> Input: 2-D array (H, W), any float dtype, NaN = nodata. Output: float64 (H, W), NaN
+# >> kept. Uses scipy.ndimage.gaussian_filter. Method = "normalised convolution": blur
+# >> values with NaN set to 0, blur the 0/1 validity map, divide. Used by mask_from_logits
+# >> (optional replay), write_mask_config.py and convert_logits_to_smoothed.py (to fix
+# >> legacy files saved without smoothing).
 def smooth_logits(logits: np.ndarray,
                   smoothing_sigma: float = DEFAULT_SMOOTHING_SIGMA
                   ) -> np.ndarray:
@@ -63,22 +81,33 @@ def smooth_logits(logits: np.ndarray,
     by the smoothed validity mask -- equivalent to smoothing over observed
     pixels only.
     """
+    # >> sigma 0/None means "no smoothing": just return a float64 copy.
     if not smoothing_sigma:
         return np.asarray(logits, dtype=np.float64)
 
     values = np.asarray(logits, dtype=np.float64)
     valid = np.isfinite(values)
     if valid.all():
+        # >> Fast path: no NaN anywhere, so a plain Gaussian blur is exact.
         return ndi.gaussian_filter(values, sigma=smoothing_sigma)
 
+    # >> Numerator: blur of values with NaN replaced by 0.
     filled = np.where(valid, values, 0.0)
     num = ndi.gaussian_filter(filled, sigma=smoothing_sigma)
+    # >> Denominator: blur of the validity map = how much real data fed each pixel.
     den = ndi.gaussian_filter(valid.astype(np.float64), sigma=smoothing_sigma)
     with np.errstate(invalid="ignore", divide="ignore"):
+        # >> Divide to renormalise; where no valid data contributed, result is NaN.
         out = np.where(den > 0, num / den, np.nan)
+    # >> Put NaN back on originally-unobserved pixels (no filling in of gaps).
     return np.where(valid, out, np.nan)
 
 
+# >> Turns a logit raster into a yes/no mine mask by comparing against a threshold.
+# >> Input: (H, W) logits (NaN = nodata). Output: bool (H, W), or uint8 0/1/2 if as_uint8.
+# >> threshold is in log-odds (0 = production; higher = stricter "provisional" mask).
+# >> Gotcha: in the bool form NaN > t is False, so "not observed" silently becomes 0;
+# >> only as_uint8=True keeps nodata as 2.
 def mask_from_logits(logits: np.ndarray,
                      threshold: float = PRODUCTION_THRESHOLD,
                      smoothing_sigma: Optional[float] = None,
@@ -100,18 +129,26 @@ def mask_from_logits(logits: np.ndarray,
     Returns:
         Boolean mask, or uint8 with :data:`MASK_NODATA` where input was NaN.
     """
+    # >> Optionally replay smoothing first (only for logits stored WITHOUT smoothing).
     field = logits if smoothing_sigma is None else smooth_logits(
         logits, smoothing_sigma)
+    # >> The actual thresholding: one comparison per pixel.
     mask = field > threshold
 
     if not as_uint8:
         return mask
 
+    # >> Convert True/False to 1/0, then mark non-finite (NaN) pixels as 2 = nodata.
     out = mask.astype(np.uint8)
     out[~np.isfinite(field)] = MASK_NODATA
     return out
 
 
+# >> Merges several same-grid uint8 masks: a pixel is mine if ANY tile says mine,
+# >> nodata only if EVERY tile is nodata, otherwise 0. Output uint8 (H, W).
+# >> Gotcha: the docstring warns against max-reduce-then-threshold, but the module
+# >> docstring (correctly) says max(a,b) > t equals (a>t) or (b>t); the real
+# >> difference is only how nodata is handled.
 def mosaic_masks(masks) -> np.ndarray:
     """Union-merge per-tile uint8 masks that already share a grid.
 
@@ -119,7 +156,10 @@ def mosaic_masks(masks) -> np.ndarray:
     is the correct merge for masks; do not substitute a max-reduce over logits
     followed by a single threshold (see the module docstring).
     """
+    # >> Stack N masks: list of (H, W) -> array (N, H, W).
     stack = np.stack([np.asarray(m, dtype=np.uint8) for m in masks])
+    # >> Boolean (N, H, W): True where that input says "not observed".
     nodata = stack == MASK_NODATA
+    # >> Reduce over axis 0 (the N inputs): all-nodata -> 2, any-1 -> 1, else 0.
     return np.where(nodata.all(axis=0), MASK_NODATA,
                     np.where((stack == 1).any(axis=0), 1, 0)).astype(np.uint8)

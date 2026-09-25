@@ -1,4 +1,10 @@
 """Is D+ actually like the current product, or does it just score the same?"""
+# >> FILE OVERVIEW
+# >> ONE-OFF ANALYSIS SCRIPT, not part of the production pipeline (nothing imports it).
+# >> Compares recipe C, recipe D+ and the old t0.55 cumulative: shared/unique locations,
+# >> Jaccard overlap and false-positive chips. Runs top to bottom at import (no main()).
+# >> Hard-coded paths under /home/zu/... (the upstream author's machine): will NOT run
+# >> here without editing. Upstream file.
 import sys
 from pathlib import Path
 
@@ -7,10 +13,12 @@ import numpy as np
 import rasterio
 from shapely.geometry import box
 
+# >> Hard-coded import path to the upstream author's checkout (/home/zu).
 sys.path.insert(0, "/home/zu/Genome/mining-detector/core")
 from persistence import Period, PersistenceConfig, compute_onsets
 from postprocess import centroid_key
 
+# >> Hard-coded data locations: training chips and model outputs.
 ROOT = Path("/home/zu/Genome/mining-detector")
 DATA = ROOT / "data/training_patches2026-05-04T09:47"
 M = ROOT / "data/outputs/48px_v4.10b-18d-20g-21a-22bc-ensemble"
@@ -19,6 +27,7 @@ YEARS = list(range(2018, 2026))
 QUARTERS = ["Q125", "Q225", "Q325", "Q425", "Q126", "Q226"]
 
 
+# >> Reads one postprocessed file: location keys, geometries, confidences (arrays).
 def load(period, t_main, t_iso):
     tag = f"t{t_main:g}_d5_3km_t-iso{t_iso:g}"
     g = gpd.read_file(M / f"postprocessed_{tag}" / f"{STEM}_{period.date_span}_{tag}.geojson",
@@ -27,6 +36,7 @@ def load(period, t_main, t_iso):
     return list(zip(kx, ky)), list(g.geometry), g["confidence"].to_numpy()
 
 
+# >> Load labelled chips (val/test2/test3) as footprint boxes; y = 0 or 1.
 chips_g, chips_y = [], []
 for split in ("val", "test2", "test3"):
     for lab in (0, 1):
@@ -36,6 +46,7 @@ for split in ("val", "test2", "test3"):
             chips_y.append(lab)
 chips = gpd.GeoDataFrame({"y": chips_y}, geometry=chips_g, crs="EPSG:4326")
 
+# >> Load every period at LOOSE (0.43/0.75) and annual periods also at STRINGENT.
 geom_of, conf_of, det43, det55 = {}, {}, {}, {}
 for p in [Period(y) for y in YEARS] + [Period.parse(t) for t in QUARTERS]:
     k, g, c = load(p, 0.43, 0.75)
@@ -49,19 +60,23 @@ for p in [Period(y) for y in YEARS] + [Period.parse(t) for t in QUARTERS]:
         for kk, gg, cc in zip(k5, g5, c5):
             geom_of.setdefault(kk, gg); conf_of.setdefault(kk, cc)
 
+# >> Recipe C = window 3, annual only; D+ = window 3 + quarters + early confirm.
 annual = [Period(y) for y in YEARS]
 cfgC = PersistenceConfig(window=3)
 cfgD = PersistenceConfig(window=3, use_quarterly_witnesses=True, early_confirm=True)
 
+# >> Provisional t0.55 chips for years whose 3-year window is not closed yet.
 prov = set().union(*[det55[p] for p in annual if not cfgC.window_is_closed(p, annual)])
 C = set(compute_onsets({p: det43[p] for p in annual}, cfgC)) | prov
 Dp = set(compute_onsets(det43, cfgD)) | prov
+# >> Old product for comparison: union of all annual t0.55 detections.
 t055 = set().union(*det55.values())
 
 print(f"{'layer':<10}{'patches':>10}")
 for n, s in (("C", C), ("D+", Dp), ("or_t055", t055)):
     print(f"{n:<10}{len(s):>10,}")
 print()
+# >> Jaccard = shared / union (1.0 = identical sets).
 print(f"D+ vs or_t055: shared {len(Dp & t055):,}  "
       f"D+ only {len(Dp - t055):,}  or_t055 only {len(t055 - Dp):,}  "
       f"Jaccard {len(Dp & t055)/len(Dp | t055):.3f}")
@@ -72,6 +87,7 @@ if extra:
           f"{np.median([conf_of[k] for k in extra if k in conf_of]):.3f}")
 
 
+# >> Labelled chips touched by any location in the set (spatial join).
 def hit_chips(keys):
     gdf = gpd.GeoDataFrame(geometry=[geom_of[k] for k in keys if k in geom_of],
                            crs="EPSG:4326")
@@ -80,6 +96,7 @@ def hit_chips(keys):
     return set(h.index.unique())
 
 
+# >> False positives = labelled-negative chips that a layer touches.
 hC, hD, h55 = hit_chips(C), hit_chips(Dp), hit_chips(t055)
 neg = set(chips.index[chips.y == 0])
 fpC, fpD, fp55 = hC & neg, hD & neg, h55 & neg

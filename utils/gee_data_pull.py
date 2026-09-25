@@ -63,6 +63,18 @@ Environment requirements
     so Google Earth Engine authentication must already be set up and the
     EE_PROJECT environment variable should name your GEE cloud project.
 """
+# >> NOTE: parts of the docstring above are outdated. Production scoring is a CNN
+# >> ensemble on raw 48x48x13 pixel chips (embedding_strategy='none'), NOT SSL4EO
+# >> ViT embeddings + an MLP ensemble (those paths exist but are unused). Also,
+# >> importing gee does NOT call ee.Initialize: init is lazy and happens once, the
+# >> first time GEE_Data_Extractor is created (gee._ensure_earth_engine_initialized).
+# >> Default tiles are 552 px + 12 px pad = 576 px, and computePixels output is cast
+# >> to float32 in memory; it is only uint16 once written to GeoTIFF.
+# >> FILE OVERVIEW
+# >> Stand-alone helper: download the same EE composite the model sees and save it as
+# >> GeoTIFFs, one per tile, for inspection/figures. Not part of the scoring pipeline.
+# >> Upstream utility (Amazon Mining Watch); per its PROVENANCE line the fork only
+# >> added comments/docstrings here, executable code is unchanged.
 
 # --- Standard library imports ---
 # argparse: builds the CLI in the __main__ block; also supplies
@@ -93,6 +105,7 @@ import gee
 # centered on the point instead of snapped to the DLTile grid.
 from tile_utils import tiles_for_geometry
 
+# >> Check a date string looks like YYYY-MM-DD (format only). argparse type= helper.
 def valid_date(s: str) -> str:
     """Validate date string in YYYY-MM-DD format and return it unchanged.
 
@@ -124,6 +137,12 @@ def valid_date(s: str) -> str:
     # argparse catches this exception type and prints a usage error.
     raise argparse.ArgumentTypeError(f"Not a valid date: '{s}'.")
 
+# >> Download and save every tile covering every feature in the AOI file.
+# >> Serial loop: one get_tile_data call at a time (max_workers is not used here).
+# >> No image cache: DataConfig.image_cache_dir has no flag, so it stays None.
+# >> FILE WRITE: <aoi path minus .geojson><collection>/
+# >> {collection}_{tile.key}_{start}_{end}.tif (uint16 for S2, deflate, EPSG:4326).
+# >> Gotcha: end_date is EXCLUSIVE in EE (2024-01-31 drops Jan 31).
 def main(args):
     """Pull raster data from Earth Engine.
 
@@ -169,6 +188,7 @@ def main(args):
     # collections that is S2 joined with Cloud Score+ (band "cs_cdf"),
     # pixels masked where cs_cdf < clear_threshold, then per-pixel median.
     # No pixels are downloaded yet -- the composite is a server-side recipe.
+    # >> Creates the EE extractor; this is where ee.Initialize actually runs (lazily).
     extractor = gee.GEE_Data_Extractor(
         args.start_date,
         args.end_date,
@@ -182,6 +202,7 @@ def main(args):
     # Output directory sits next to the input file: strip the ".geojson"
     # suffix and append the collection name, e.g. "my_aoi" + "S2L1C" ->
     # my_aoiS2L1C/. Created eagerly so save_tile can write into it.
+    # >> Gotcha: split('.geojson') cuts at the first '.geojson' anywhere in the path.
     outdir = Path(args.geojson_path.split('.geojson')[0] + args.collection)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -195,6 +216,7 @@ def main(args):
         # Candidate tiles covering this geometry. Polygons -> DLTile UTM
         # grid tiles of (tilesize + 2*pad) pixels per side at 10 m/px;
         # Points -> CenteredTile objects centered on the point itself.
+        # >> Point -> one CenteredTile with pad 0 (pad ignored); polygons -> DLTile grid.
         tiles = tiles_for_geometry(
             geom,
             extractor.config.tilesize,
@@ -212,10 +234,14 @@ def main(args):
                 # via ee.data.computePixels -> NumPy array of shape
                 # (H, W, bands); for S2 the values are uint16 digital
                 # numbers (reflectance x 10000), cast to float32 in memory.
+                # >> Returns (576, 576, 13) float32 for the defaults; no cache is used
+                # >> here.
                 pixels = extractor.get_tile_data(tile)
                 # save_tile writes the array as a georeferenced GeoTIFF in
                 # EPSG:4326 (uint16 on disk for S2 collections), named
                 # from the collection, tile key, and date range.
+                # >> FILE WRITE: GeoTIFF (float32 -> uint16 cast truncates any fractional
+                # >> median).
                 extractor.save_tile(pixels, tile, outdir)
                 tiles_written.append(tile)
             except Exception as e:
@@ -255,10 +281,13 @@ if __name__ == "__main__":
     data_defaults = gee.DataConfig()
 
     # Tile edge length in pixels (default 576 -> ~5.76 km at 10 m/px).
+    # >> NOTE: the comment above is wrong: the DataConfig default tilesize is 552 px
+    # >> (5.52 km); 576 px is tilesize + 2 * pad.
     parser.add_argument("--tilesize", type=int,
                         default=data_defaults.tilesize,
                         help="Tile width in pixels for requests to GEE")
     # Extra border pixels added on every side of each tile (default 0).
+    # >> NOTE: the comment above is wrong: the DataConfig default pad is 12 px.
     parser.add_argument("--pad", type=int,
                         default=data_defaults.pad,
                         help="Number of pixels to pad each tile")
