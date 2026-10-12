@@ -67,3 +67,150 @@ class Config:
     inference: Inference
     thresholds: Thresholds
     persistence: Persistence
+
+
+# Checker helpers for configuration
+
+def _section(raw: dict, name: str, keys: set[str]) -> dict:
+    """One section of the YAML, with exactly the expected keys."""
+    if not isinstance(raw, dict) or name not in raw:
+        raise ValueError(f"config: section '{name}' is missing")
+    sec = raw[name]
+    if not isinstance(sec, dict):
+        raise ValueError(f"config: section '{name}' is empty or not a section")
+    missing, unknown = keys - sec.keys(), sec.keys() - keys
+    if missing or unknown:
+        raise ValueError(f"config: section '{name}' is missing {sorted(missing)} "
+                         f"and has unknown keys {sorted(unknown)} (a typo?)")
+    return sec
+
+
+def _int(name: str, value, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"config: {name} must be a whole number, got {value!r}")
+    if value < minimum:
+        raise ValueError(f"config: {name} must be at least {minimum}, got {value}")
+    return value
+
+
+def _share(name: str, value) -> float:
+    """A number strictly between 0 and 1 (a probability or a fraction)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"config: {name} must be a number, got {value!r}")
+    if not 0 < value < 1:
+        raise ValueError(f"config: {name} must be between 0 and 1, got {value}")
+    return float(value)
+
+
+def _file(name: str, relative: str) -> Path:
+    path = REPO / relative
+    if not path.is_file():
+        raise ValueError(f"config: {name} points to a missing file: {path}")
+    return path
+
+
+# final function that automates the checking
+
+def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
+    path = Path(path).resolve()
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+
+    run = _section(raw, "run", {"name", "output_root"})
+    if run["output_root"] in (None, "", "CHANGE_ME"):
+        raise ValueError("config: set run.output_root to a real folder first")
+
+    per = _section(raw, "periods", {"first_month", "last_month", "frequencies"})
+    if not isinstance(per["frequencies"], list) or not per["frequencies"] \
+            or len(set(per["frequencies"])) != len(per["frequencies"]):
+        raise ValueError("config: periods.frequencies must be a list like "
+                         "[monthly, quarterly], without repeats")
+    for freq in per["frequencies"]:
+        if freq not in FREQUENCIES:
+            raise ValueError(f"config: unknown frequency {freq!r}; "
+                             f"allowed: {FREQUENCIES}")
+    periods = {freq: period_range(per["first_month"], per["last_month"], freq)
+               for freq in per["frequencies"]}
+
+    reg = _section(raw, "region", {"subregion_files", "subregions", "andes_boundary"})
+    if not isinstance(reg["subregions"], list) or not reg["subregions"]:
+        raise ValueError("config: region.subregions must be a list like [1, 2, 3]")
+    region = Region(
+        subregion_files={_int("region.subregions", n, 1):
+                         _file(f"subregion {n}", reg["subregion_files"].format(n=n))
+                         for n in reg["subregions"]},
+        andes_boundary=_file("region.andes_boundary", reg["andes_boundary"]),
+    )
+
+    mod = _section(raw, "model", {"path"})
+    img = _section(raw, "imagery", {"collection", "tilesize", "pad",
+                                    "clear_threshold", "max_workers"})
+    if img["collection"] != "S2L1C":
+        raise ValueError("config: imagery.collection must be S2L1C; "
+                         "the model was trained on its 13 bands")
+    imagery = Imagery(
+        collection=img["collection"],
+        tilesize=_int("imagery.tilesize", img["tilesize"], 1),
+        pad=_int("imagery.pad", img["pad"], 0),
+        clear_threshold=_share("imagery.clear_threshold", img["clear_threshold"]),
+        max_workers=_int("imagery.max_workers", img["max_workers"], 1),
+    )
+
+    inf = _section(raw, "inference", {"stride_ratio", "tries", "batch_tiles"})
+    inference = Inference(
+        model_path=_file("model.path", mod["path"]),
+        stride_ratio=_int("inference.stride_ratio", inf["stride_ratio"], 1),
+        tries=_int("inference.tries", inf["tries"], 1),
+        batch_tiles=_int("inference.batch_tiles", inf["batch_tiles"], 1),
+    )
+
+    thr = _section(raw, "thresholds", {"raw", "andes", "loose", "stringent",
+                                       "neighbours_k", "isolation_km"})
+    duals = {}
+    for name in ("loose", "stringent"):
+        d = _section(thr, name, {"t_main", "t_iso"})
+        t_main = _share(f"thresholds.{name}.t_main", d["t_main"])
+        t_iso = _share(f"thresholds.{name}.t_iso", d["t_iso"])
+        if t_iso < t_main:
+            raise ValueError(f"config: thresholds.{name}: t_iso must be at "
+                             f"least t_main (isolated chips need MORE evidence)")
+        duals[name] = DualThreshold(t_main, t_iso)
+    km = thr["isolation_km"]
+    if isinstance(km, bool) or not isinstance(km, (int, float)) or km <= 0:
+        raise ValueError("config: thresholds.isolation_km must be a positive number")
+    thresholds = Thresholds(
+        raw=_share("thresholds.raw", thr["raw"]),
+        andes=_share("thresholds.andes", thr["andes"]),
+        loose=duals["loose"],
+        stringent=duals["stringent"],
+        neighbours_k=_int("thresholds.neighbours_k", thr["neighbours_k"], 1),
+        isolation_km=float(km),
+    )
+
+    pst = _section(raw, "persistence", {"k", "window_months"})
+    persistence = Persistence(
+        k=_int("persistence.k", pst["k"], 1),
+        window_months=_int("persistence.window_months", pst["window_months"], 1),
+    )
+    if "quarterly" in periods and persistence.window_months % 3:
+        raise ValueError("config: persistence.window_months must be a multiple "
+                         "of 3, so the window covers whole quarters")
+    for freq in periods:
+        step = 1 if freq == "monthly" else 3
+        if persistence.k > persistence.window_months // step:
+            raise ValueError(f"config: persistence.k={persistence.k} can never be "
+                             f"reached: a {persistence.window_months}-month window "
+                             f"holds only {persistence.window_months // step} "
+                             f"{freq} periods")
+
+    return Config(
+        source=path,
+        run_name=str(run["name"]),
+        output_root=Path(run["output_root"]).expanduser(),
+        periods=periods,
+        region=region,
+        imagery=imagery,
+        inference=inference,
+        thresholds=thresholds,
+        persistence=persistence,
+    )
