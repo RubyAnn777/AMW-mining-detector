@@ -1,0 +1,9 @@
+# This file will be the central configuration file. It deviates from the AMW configuration as frequencies differ and we need to optimise for 
+# parallelisation down the line
+
+periods:
+  first_month: "2018-01"
+  last_month: "2026-09"
+  frequencies: [monthly, quarterly]
+
+  
