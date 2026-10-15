@@ -214,3 +214,45 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
         thresholds=thresholds,
         persistence=persistence,
     )
+
+def describe(cfg: Config) -> str:
+    """A readable summary of the settings, for a person to check."""
+    t, p = cfg.thresholds, cfg.persistence
+    lines = [
+        f"config       {cfg.source}",
+        f"run          {cfg.run_name}  ->  {cfg.output_root}",
+    ]
+    for freq, periods in cfg.periods.items():
+        first, last = periods[0], periods[-1]
+        lines.append(f"{freq:<12} {len(periods)} periods: {first.tag} "
+                     f"(from {first.start}) to {last.tag} (until {last.end}, excluded)")
+    lines += [
+        f"subregions   {sorted(cfg.region.subregion_files)}",
+        f"andes        {cfg.region.andes_boundary.name}",
+        f"model        {cfg.inference.model_path.name}",
+        f"imagery      {cfg.imagery.collection}, tile {cfg.imagery.tilesize}"
+        f"+{cfg.imagery.pad} px, clear >= {cfg.imagery.clear_threshold:g}",
+        f"thresholds   amazon > {t.raw:g}, andes > {t.andes:g}, "
+        f"loose {t.loose.t_main:g}/{t.loose.t_iso:g}, "
+        f"stringent {t.stringent.t_main:g}/{t.stringent.t_iso:g}, "
+        f"isolated = {t.neighbours_k}th neighbour beyond {t.isolation_km:g} km",
+        f"persistence  {p.k} detections within {p.window_months} months",
+    ]
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Check config.yaml and print what it sets.")
+    ap.add_argument("--config", default=str(DEFAULT_CONFIG),
+                    help="path to a config.yaml (default: the one next to this file)")
+    args = ap.parse_args()
+
+    try:
+        cfg = load_config(args.config)
+    except (ValueError, OSError, yaml.YAMLError) as err:
+        raise SystemExit(f"CONFIG ERROR: {err}")
+
+    print(describe(cfg))
+    print("\nconfig OK")
