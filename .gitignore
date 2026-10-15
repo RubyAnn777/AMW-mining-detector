@@ -59,3 +59,5 @@ scripts/boundaries/diffs/
 # scripts/templates/ -- edit those, not the staged copies.
 data/staging_gs/
 data/staging_source-coop/
+# Local test runs of panel_pipeline (run.output_root: "tests_output"); outputs, not code.
+tests_output/

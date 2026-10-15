@@ -115,12 +115,30 @@ def _file(name: str, relative: str) -> Path:
     return path
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load, except that a key written twice is an error.
+
+    Plain PyYAML silently keeps the LAST copy of a repeated key, so a forgotten
+    second `clip_to:` line could quietly decide whether a run is a test.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise ValueError(f"config: {key!r} is written twice "
+                                 f"(line {key_node.start_mark.line + 1}); keep one")
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 # final function that automates the checking
 
 def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
     path = Path(path).resolve()
     with open(path) as f:
-        raw = yaml.safe_load(f)
+        raw = yaml.load(f, Loader=_UniqueKeyLoader)   # safe_load plus the rule above
 
     run = _section(raw, "run", {"name", "output_root"})
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(run["name"])):
@@ -218,7 +236,9 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
     return Config(
         source=path,
         run_name=str(run["name"]),
-        output_root=Path(run["output_root"]).expanduser(),
+        # A relative output_root starts at the repository root, like every other
+        # path here, so the run is found the same way whichever folder you run from.
+        output_root=REPO / Path(run["output_root"]).expanduser(),
         periods=periods,
         region=region,
         imagery=imagery,
