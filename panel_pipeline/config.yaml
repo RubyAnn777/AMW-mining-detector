@@ -20,7 +20,8 @@ region:
 model:
   path: "models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5"
 
-imagery:                            # their gee.DataConfig values
+imagery:                            # their gee.DataConfig values, plus the project
+  ee_project: "CHANGE_ME"           # your Google Cloud project for Earth Engine; no default
   collection: "S2L1C"
   tilesize: 552
   pad: 12

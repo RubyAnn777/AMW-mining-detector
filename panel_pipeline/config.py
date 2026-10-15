@@ -25,6 +25,7 @@ class Region:
 
 @dataclass(frozen=True)
 class Imagery:
+    ee_project: str                      # Google Cloud project billed for Earth Engine
     collection: str
     tilesize: int
     pad: int
@@ -173,12 +174,18 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
     )
 
     mod = _section(raw, "model", {"path"})
-    img = _section(raw, "imagery", {"collection", "tilesize", "pad",
+    img = _section(raw, "imagery", {"ee_project", "collection", "tilesize", "pad",
                                     "clear_threshold", "max_workers"})
+    # DEVIATION from AMW: gee.py:34 falls back to AMW's own project ("earthindex")
+    # when EE_PROJECT is unset. We have no default: a run names the project it bills.
+    if not isinstance(img["ee_project"], str) or img["ee_project"] in ("", "CHANGE_ME"):
+        raise ValueError("config: set imagery.ee_project to the Google Cloud project "
+                         "your Earth Engine account uses")
     if img["collection"] != "S2L1C":
         raise ValueError("config: imagery.collection must be S2L1C; "
                          "the model was trained on its 13 bands")
     imagery = Imagery(
+        ee_project=img["ee_project"],
         collection=img["collection"],
         tilesize=_int("imagery.tilesize", img["tilesize"], 1),
         pad=_int("imagery.pad", img["pad"], 0),
@@ -265,6 +272,7 @@ def describe(cfg: Config) -> str:
         f"model        {cfg.inference.model_path.name}",
         f"imagery      {cfg.imagery.collection}, tile {cfg.imagery.tilesize}"
         f"+{cfg.imagery.pad} px, clear >= {cfg.imagery.clear_threshold:g}",
+        f"ee project   {cfg.imagery.ee_project} (billed for every Earth Engine request)",
         f"thresholds   amazon > {t.raw:g}, andes > {t.andes:g}, "
         f"loose {t.loose.t_main:g}/{t.loose.t_iso:g}, "
         f"stringent {t.stringent.t_main:g}/{t.stringent.t_iso:g}, "
