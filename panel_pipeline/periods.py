@@ -13,6 +13,9 @@ _QUARTER_TAG = re.compile(r"^(\d{4})Q([1-4])$")   # 2018Q1
 
 @dataclass(frozen=True, order=True)
 class Period:
+    # DEVIATION from AMW: AMW's Period (core/periods.py) is a year or a quarter, tagged
+    # "2024" or "Q125". Ours is a month or a quarter, tagged "2024-01" or "2025Q1":
+    # four-digit years sort correctly as text, and pandas and Stata read these tags.
     year: int
     first_month: int
     n_months: int
@@ -46,8 +49,13 @@ class Period:
 
     @property # I am doing it a bit more "complex" here so that years seamlessly roll over
     def end(self) -> date:
+        # Same as AMW's earlier runs: the end is the 1st of the next period, which Earth
+        # Engine excludes, so every day of the period is imaged. AMW's training imagery
+        # is named this way (e.g. ..._2024-01-01_2025-01-01, docs/PROVENANCE.md:402-411).
+        # DEVIATION from AMW's current driver: scripts/pipeline.py:80-81 and :160 pass the
+        # period's last day (core/periods.py:84, e.g. 2024-12-31), so those runs drop it.
         nxt = self.month_index + self.n_months
-        return date(nxt // 12, nxt % 12 + 1, 1) # also keeping the AMW logic of including the first day of the next month as the "end" eventhough its not scored
+        return date(nxt // 12, nxt % 12 + 1, 1)
 
     @property
     def date_span(self) -> str:
