@@ -1,0 +1,41 @@
+{
+  "planned_utc": "2026-10-15T13:55:43+00:00",
+  "host": "MacBook-Pro-2.local",
+  "python": "3.11.17",
+  "git_commit": "158842c4e4f5395fcc7be52647f67f719c4b27b7",
+  "git_uncommitted_files": [
+    "tests_output/"
+  ],
+  "packages": {
+    "descarteslabs": "2.1.2",
+    "earthengine-api": "1.7.35",
+    "tensorflow": "2.14.0",
+    "geopandas": "1.1.0",
+    "shapely": "2.1.2",
+    "numpy": "1.26.4",
+    "pandas": "3.0.3",
+    "pyarrow": "25.0.0"
+  },
+  "file_sha256": {
+    "models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5": "6d23c52bff248c8588c93915821e6251b128946dd019f5e6d147fd228831febd",
+    "data/boundaries/andes_supplemental.geojson": "9571f543bcf2945852de5604c37f37639e6519acf3618d65f6995f53899edaea",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_1.geojson": "3158460402ecf505aced95cd34634adc5541cbd7fc98a0052f922c35ecbf83b6",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_2.geojson": "d01a01fbcf7894600295052ee082276e2a7cbeca1236fdf229eb2e7c17e5366d",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_3.geojson": "24ff166d139fcc327457f0f96beaaec4c69a150a2fea98b9c591dc14dbf7067d",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_4.geojson": "32978e0506efcba4375cca11a719acc578739110f6682f26e2249a34212454ec",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_5.geojson": "f9d1f37d3c89075431d91c1501ee2f860de0bf6a7517aa0f5dcc4aabf482eed3",
+    "data/boundaries/Amazon_ACA/Amazon_ACA_6.geojson": "0bf081e7160296fe1dd91d7a9929feec7135cbdc8f8b1d30a20850cf5c707a8b",
+    "data/boundaries/la_pampa_corridor.geojson": "e1f53e9d18246c3225433b9b8595876d47c2294298e4cd367a1c2e68be7f9817"
+  },
+  "counts": {
+    "chips": 42320,
+    "in_region": 42320,
+    "in_andes": 0,
+    "tiles_per_subregion": {
+      "6": 80
+    },
+    "tiles_unique": 80,
+    "tiles_on_subregion_borders": 0,
+    "andes_tiles_planned": 0
+  }
+}
