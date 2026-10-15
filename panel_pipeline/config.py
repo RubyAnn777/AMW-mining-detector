@@ -25,7 +25,6 @@ class Region:
 
 @dataclass(frozen=True)
 class Imagery:
-    ee_project: str                      # Google Cloud project billed for Earth Engine
     collection: str
     tilesize: int
     pad: int
@@ -68,6 +67,7 @@ class Config:
     source: Path                          # the config.yaml these came from
     run_name: str
     output_root: Path
+    ee_project: str                       # Google Cloud project billed for Earth Engine
     periods: dict[str, list[Period]]      # "monthly" -> 105 periods, ...
     region: Region
     imagery: Imagery
@@ -148,6 +148,14 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
     if run["output_root"] in (None, "", "CHANGE_ME"):
         raise ValueError("config: set run.output_root to a real folder first")
 
+    ee = _section(raw, "earth_engine", {"project"})
+    # DEVIATION from AMW: gee.py:34 reads the project from the EE_PROJECT environment
+    # variable, else falls back to AMW's own ("earthindex"). We read it from this
+    # file, with no default: a run names the project it bills.
+    if not isinstance(ee["project"], str) or ee["project"].strip() in ("", "CHANGE_ME"):
+        raise ValueError("config: set earth_engine.project to the ID of the Google "
+                         "Cloud project your Earth Engine account uses")
+
     per = _section(raw, "periods", {"first_month", "last_month", "frequencies"})
     if not isinstance(per["frequencies"], list) or not per["frequencies"] \
             or len(set(per["frequencies"])) != len(per["frequencies"]):
@@ -174,18 +182,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
     )
 
     mod = _section(raw, "model", {"path"})
-    img = _section(raw, "imagery", {"ee_project", "collection", "tilesize", "pad",
-                                    "clear_threshold", "max_workers"})
-    # DEVIATION from AMW: gee.py:34 falls back to AMW's own project ("earthindex")
-    # when EE_PROJECT is unset. We have no default: a run names the project it bills.
-    if not isinstance(img["ee_project"], str) or img["ee_project"] in ("", "CHANGE_ME"):
-        raise ValueError("config: set imagery.ee_project to the Google Cloud project "
-                         "your Earth Engine account uses")
+    img = _section(raw, "imagery", {"collection", "tilesize", "pad", "clear_threshold",
+                                    "max_workers"})
     if img["collection"] != "S2L1C":
         raise ValueError("config: imagery.collection must be S2L1C; "
                          "the model was trained on its 13 bands")
     imagery = Imagery(
-        ee_project=img["ee_project"],
         collection=img["collection"],
         tilesize=_int("imagery.tilesize", img["tilesize"], 1),
         pad=_int("imagery.pad", img["pad"], 0),
@@ -246,6 +248,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG) -> Config:
         # A relative output_root starts at the repository root, like every other
         # path here, so the run is found the same way whichever folder you run from.
         output_root=REPO / Path(run["output_root"]).expanduser(),
+        ee_project=ee["project"],
         periods=periods,
         region=region,
         imagery=imagery,
@@ -260,6 +263,7 @@ def describe(cfg: Config) -> str:
     lines = [
         f"config       {cfg.source}",
         f"run          {cfg.run_name}  ->  {cfg.output_root}",
+        f"ee project   {cfg.ee_project} (billed for every Earth Engine request)",
     ]
     for freq, periods in cfg.periods.items():
         first, last = periods[0], periods[-1]
@@ -272,7 +276,6 @@ def describe(cfg: Config) -> str:
         f"model        {cfg.inference.model_path.name}",
         f"imagery      {cfg.imagery.collection}, tile {cfg.imagery.tilesize}"
         f"+{cfg.imagery.pad} px, clear >= {cfg.imagery.clear_threshold:g}",
-        f"ee project   {cfg.imagery.ee_project} (billed for every Earth Engine request)",
         f"thresholds   amazon > {t.raw:g}, andes > {t.andes:g}, "
         f"loose {t.loose.t_main:g}/{t.loose.t_iso:g}, "
         f"stringent {t.stringent.t_main:g}/{t.stringent.t_iso:g}, "

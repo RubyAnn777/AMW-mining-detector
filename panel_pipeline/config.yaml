@@ -5,6 +5,10 @@ run:
   name: "pilot"                     # label for this run's folder
   output_root: "tests_output"          # cluster scratch - where the output file is written
 
+earth_engine:  # DEVIATION from AMW: AMW reads the project from the EE_PROJECT environment
+               # variable, else uses its own "earthindex" (gee.py:34). We set it here.
+  project: "deforestation-and-mining"   # Google Cloud project ID; billed for every request
+
 periods:   # DEVIATION from AMW: AMW scores calendar years, plus quarters from 2025
            # (pipeline_config.py:53); we score months and quarters from 2018, as two panels.
   first_month: "2018-01"
@@ -20,8 +24,7 @@ region:
 model:
   path: "models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5"
 
-imagery:                            # their gee.DataConfig values, plus the project
-  ee_project: "CHANGE_ME"           # your Google Cloud project for Earth Engine; no default
+imagery:                            # their gee.DataConfig values
   collection: "S2L1C"
   tilesize: 552
   pad: 12
