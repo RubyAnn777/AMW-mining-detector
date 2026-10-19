@@ -12,10 +12,9 @@ amw_comparison/
 ├── README.md         this file
 ├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
 ├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
-├── download_amw.py   fetches AMW's files you don't have yet (--quarters, --panel)
 ├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
 ├── tests/            python -m unittest discover -s amw_comparison/tests
-└── data/amw/         AMW's published files (ignored by git)
+└── data/amw/         AMW's files as you downloaded them (ignored by git)
 
 configs/amw_compare_s3_2026-10-19.yaml     the long run's settings (committed)
 tests_output/amw_compare_s3_2026-10-19/    the long run's output (ignored by git)
@@ -61,18 +60,18 @@ Q326 `f2f56a0484f2`. AMW replaces its files when it re-runs, and the notebook pr
 
 All commands from the repository root, in the venv.
 
-**0. Once: AMW's files into `data/amw/`.** Your downloads are in `AMW_Output/`, which git
-tracks. This branch stops tracking it, so copy the files first; the pull then removes
-`AMW_Output/` and the copy stays:
+**0. AMW's files.** The notebook reads them from `amw_comparison/data/amw/`, names as
+downloaded from Source Cooperative:
 
-```bash
-mkdir -p amw_comparison/data
-cp -R AMW_Output amw_comparison/data/amw
-git pull origin claude/project-thread-scl620
+```
+amazon_basin_Q126_t0.4.geojson   amazon_basin_Q126_t0.43_t-iso0.75.geojson
+amazon_basin_Q226_t0.4.geojson   amazon_basin_Q226_t0.43_t-iso0.75.geojson
+amazon_basin_Q326_t0.4.geojson   amazon_basin_Q326_t0.43_t-iso0.75.geojson
 ```
 
-Optional: `python amw_comparison/download_amw.py --panel` fetches AMW's one-row-per-location
-table (`amazon_basin_detections.geojson`), which the notebook then shows at the top.
+The comparison needs only the `_t0.4` files; the others are shown in section 0. A later
+quarter needs its files added there by hand. If `amazon_basin_detections.geojson` (AMW's one
+row per location) is there too, section 0 shows it.
 
 **1. Tests** (seconds, no Earth Engine): `python -m unittest discover -s amw_comparison/tests -v`
 

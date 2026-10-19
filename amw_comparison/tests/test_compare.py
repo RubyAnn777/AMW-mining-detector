@@ -26,6 +26,8 @@ class TestTags(unittest.TestCase):
     def test_amw_tag(self):
         self.assertEqual(compare.amw_tag("2026Q3"), "Q326")
         self.assertEqual(compare.amw_file("2026Q1").name, "amazon_basin_Q126_t0.4.geojson")
+        self.assertEqual(compare.amw_file("2026Q3", "postprocessed").name,
+                         "amazon_basin_Q326_t0.43_t-iso0.75.geojson")
 
 
 class TestJoinOnRealChips(unittest.TestCase):
