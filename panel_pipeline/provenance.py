@@ -1,4 +1,6 @@
-"""Where a result came from: the machine, the code, the packages, the input files.
+"""Helper functions for tracking the provenance of results.
+
+Where a result came from: the machine, the code, the packages, the input files.
 
 plan.py records this once per run. detect.py records it again for every period
 it scores, because scoring can happen later, on another machine, with newer code.

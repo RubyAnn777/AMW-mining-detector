@@ -1,7 +1,6 @@
 """The panel's space axis: AMW's tiles and chips, and one whole-number chip ID.
 
-periods.py says WHEN a row is; this file says WHERE. Tiles and chip squares
-come from AMW's own functions, so a chip here is exactly a chip AMW scores.
+Tiles and chip squares come from AMW's functions
 """
 from __future__ import annotations
 
