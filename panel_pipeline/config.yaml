@@ -19,7 +19,8 @@ region:
   subregion_files: "data/boundaries/Amazon_ACA/Amazon_ACA_{n}.geojson"
   subregions: [1, 2, 3, 4, 5, 6]
   andes_boundary: "data/boundaries/andes_supplemental.geojson"
-  clip_to: "data/boundaries/la_pampa_corridor.geojson"   # test runs only; null = whole region
+  clip_to: null
+  
 
 model:
   path: "models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5"
@@ -29,7 +30,7 @@ imagery:                            # their gee.DataConfig values
   tilesize: 552
   pad: 12
   clear_threshold: 0.6
-  max_workers: 8
+  max_workers: 6
 
 inference:                          # their InferenceConfig values
   stride_ratio: 2
