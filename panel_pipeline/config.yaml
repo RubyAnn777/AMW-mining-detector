@@ -3,7 +3,7 @@
 
 run:
   name: "pilot"                     # label for this run's folder
-  output_root: "test_region_small_19.10.2026"          # cluster scratch - where the output file is written
+  output_root: "test_region"          # cluster scratch - where the output file is written
 
 earth_engine:  # DEVIATION from AMW: AMW reads the project from the EE_PROJECT environment
                # variable, else uses its own "earthindex" (gee.py:34). We set it here.
@@ -19,7 +19,7 @@ region:
   subregion_files: "data/boundaries/Amazon_ACA/Amazon_ACA_{n}.geojson"
   subregions: [1, 2, 3, 4, 5, 6]
   andes_boundary: "data/boundaries/andes_supplemental.geojson"
-  clip_to: "data/boundaries/test_region_small.geojson"
+  clip_to: "data/boundaries/test_region.geojson"
 
 
 model:
