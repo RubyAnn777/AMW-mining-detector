@@ -61,3 +61,4 @@ data/staging_gs/
 data/staging_source-coop/
 # Local test runs of panel_pipeline (run.output_root: "tests_output"); outputs, not code.
 tests_output/
+test_region_small_19.10.2026/
