@@ -12,8 +12,8 @@ amw_comparison/
 ├── README.md         this file
 ├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
 ├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
-├── download_amw.py   fetches AMW's files, only needed for quarters you don't have yet
-├── compare.ipynb     the comparison: inputs, join, counts, scores, diagnostics, map
+├── download_amw.py   fetches AMW's files you don't have yet (--quarters, --panel)
+├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
 ├── tests/            python -m unittest discover -s amw_comparison/tests
 └── data/amw/         AMW's published files (ignored by git)
 
@@ -26,6 +26,8 @@ a chip by its centre rounded to 5 decimals (`centroid_key`, core/postprocess.py:
 `plan.py` already stores that key for every chip (`amw_key_x/y` in `plan/chips.parquet`).
 Equal keys mean the same chip. Checked on AMW's real files: all 8,101 / 19,389 / 25,646
 AMW detections centred in subregion 3 (Q1 / Q2 / Q3 2026) land on one of our planned chips.
+AMW's 16 October correction of a grid misalignment in subregion 3 concerns its 2025 annual
+detections only (their public README); the quarterly files line up, as this check shows.
 
 ## Results so far: test_region (36 tiles in subregion 2)
 
@@ -42,8 +44,15 @@ AMW detections centred in subregion 3 (Q1 / Q2 / Q3 2026) land on one of our pla
   0.35 and 0.45. Two possible causes:
   1. **30 September.** Our quarter ends on 1 Oct, excluded, so 30 Sep is in. AMW's ends on
      30 Sep, excluded (handoff §4). On Q1 and Q2 the last day added nothing here; in Q3 it may.
-  2. **Scenes Earth Engine added after AMW scored Q3** (AMW scored it only weeks ago).
+  2. **Scenes Earth Engine added after AMW scored Q3.** AMW ran Q3 on 2 to 3 October
+     (upstream `docs/design/pipeline.md`), our test_region run was on 19 October.
   `scene_dates.py` (step 3) tells them apart.
+
+Upstream, checked 19 October (earthrise-media/mining-detector at `7bde733`): AMW's code that
+scores a quarter (`core/gee.py`, `inference_engine.py`, `inference_pipeline.py`, `tile_utils.py`,
+`periods.py`, `postprocess.py`) is the same as ours apart from comments, and the date windows
+and inference commands for Q3 are unchanged. Their newer commits are about publishing, area
+statistics and docs.
 
 AMW files compared (sha256, first 12 characters): Q126 `b4f35df7398e`, Q226 `5c57a94daca9`,
 Q326 `f2f56a0484f2`. AMW replaces its files when it re-runs, and the notebook prints these.
@@ -61,6 +70,9 @@ mkdir -p amw_comparison/data
 cp -R AMW_Output amw_comparison/data/amw
 git pull origin claude/project-thread-scl620
 ```
+
+Optional: `python amw_comparison/download_amw.py --panel` fetches AMW's one-row-per-location
+table (`amazon_basin_detections.geojson`), which the notebook then shows at the top.
 
 **1. Tests** (seconds, no Earth Engine): `python -m unittest discover -s amw_comparison/tests -v`
 
@@ -101,4 +113,5 @@ workers up to twice that if Earth Engine is the bottleneck, so plan for **1.5 to
 log prints the minutes for each 100-tile batch; minutes per batch × 349 batches is the total.
 
 **5. Compare.** In the notebook set `RUN = "tests_output/amw_compare_s3_2026-10-19"`,
-`SUBREGION = 3`, Run All. Keeping only detected chips, it stays within a few GB of memory.
+`SUBREGION = 3`, Run All. At that size it takes about 2 minutes and 5 to 6 GB of memory (tested
+on a synthetic run of the same size).

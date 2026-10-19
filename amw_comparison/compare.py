@@ -27,6 +27,7 @@ sys.path.append(str(REPO / "core"))
 from postprocess import centroid_key  # noqa: E402  (AMW code)
 
 AMW_DIR = HERE / "data" / "amw"      # AMW's published files (ignored by git)
+AMW_PANEL = AMW_DIR / "amazon_basin_detections.geojson"   # one row per location (MANIFEST.yaml)
 RAW_THRESHOLD = 0.4                  # AMW keeps confidence > 0.4, strictly (inference_engine.py:803)
 OUTCOMES = ["both", "only ours", "only AMW", "neither"]
 NUMBER = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
