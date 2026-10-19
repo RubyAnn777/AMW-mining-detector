@@ -1,0 +1,52 @@
+# This file will be the central configuration file. It deviates from the AMW configuration as frequencies differ and we need to optimise for 
+# parallelisation down the line
+
+run:
+  name: "test_region_para_2026-10-19"
+  output_root: "tests_output"
+
+earth_engine:  # DEVIATION from AMW: AMW reads the project from the EE_PROJECT environment
+               # variable, else uses its own "earthindex" (gee.py:34). We set it here.
+  project: "deforestation-and-mining"   # Google Cloud project ID; billed for every request
+
+periods:   # DEVIATION from AMW: AMW scores calendar years, plus quarters from 2025
+           # (pipeline_config.py:53); we score months and quarters from 2018, as two panels.
+  first_month: "2018-01"
+  last_month: "2026-09"
+  frequencies: [monthly, quarterly]
+
+region:
+  subregion_files: "data/boundaries/Amazon_ACA/Amazon_ACA_{n}.geojson"
+  subregions: [1, 2, 3, 4, 5, 6]
+  andes_boundary: "data/boundaries/andes_supplemental.geojson"
+  clip_to: "data/boundaries/test_region_pará.geojson"
+
+
+model:
+  path: "models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5"
+
+imagery:                            # their gee.DataConfig values
+  collection: "S2L1C"
+  tilesize: 552
+  pad: 12
+  clear_threshold: 0.6
+  max_workers: 6
+
+inference:                          # their InferenceConfig values
+  stride_ratio: 2
+  tries: 3
+  batch_tiles: 500
+
+thresholds:
+  raw: 0.4                          # Amazon detection: mean > 0.4 (AMW pipeline_config.py:73)
+  andes: 0.2                        # Andes detection: mean > 0.2
+  loose:     {t_main: 0.43, t_iso: 0.75}
+  stringent: {t_main: 0.55, t_iso: 0.8}
+  neighbours_k: 5
+  isolation_km: 3.0
+
+persistence:   # DEVIATION from AMW: AMW needs a detection in year Y and in Y+1 on annual
+               # composites (persistence.py:97-112); we have none, so the rule is
+               # restated in months. The exact rule is decided in persist.py.
+  k: 2
+  window_months: 12
