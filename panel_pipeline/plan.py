@@ -45,6 +45,11 @@ def plan_tiles(cfg: Config):
             # area instead, so a test goes through the same subregion routing
             # as the full run. clip_to: null gives AMW's behaviour exactly.
             shape = shape.intersection(clip)
+            # Where the test area only touches this subregion's border, the cut
+            # leaves lines or points. They have no area to tile, and AMW's tiler
+            # (DLTile) refuses them, so keep only the polygons.
+            shape = shapely.union_all([p for p in shapely.get_parts(shape)
+                                       if p.geom_type in ("Polygon", "MultiPolygon")])
         for tile in tiles_for(shape, cfg.imagery):
             # Same as AMW: a tile on a subregion border is listed under both
             # subregions, is scored twice, and the copies are merged later
