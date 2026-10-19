@@ -26,8 +26,9 @@ REPO = HERE.parent
 sys.path.append(str(REPO / "core"))
 from postprocess import centroid_key  # noqa: E402  (AMW code)
 
-AMW_DIR = HERE / "data" / "amw"      # AMW's published files (ignored by git)
+AMW_DIR = HERE / "data" / "amw"      # AMW's files, as you downloaded them (ignored by git)
 AMW_PANEL = AMW_DIR / "amazon_basin_detections.geojson"   # one row per location (MANIFEST.yaml)
+AMW_KINDS = {"raw": "t0.4", "postprocessed": "t0.43_t-iso0.75"}   # MANIFEST.yaml filename_grammar
 RAW_THRESHOLD = 0.4                  # AMW keeps confidence > 0.4, strictly (inference_engine.py:803)
 OUTCOMES = ["both", "only ours", "only AMW", "neither"]
 NUMBER = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
@@ -41,9 +42,9 @@ def amw_tag(quarter: str) -> str:
     return f"Q{q}{year[2:]}"
 
 
-def amw_file(quarter: str, folder: Path = AMW_DIR) -> Path:
-    """AMW's raw detections for a quarter (MANIFEST.yaml, filename_grammar: raw)."""
-    return folder / f"amazon_basin_{amw_tag(quarter)}_t0.4.geojson"
+def amw_file(quarter: str, kind: str = "raw", folder: Path = AMW_DIR) -> Path:
+    """AMW's file for a quarter: raw detections, or after AMW's postprocess filter."""
+    return folder / f"amazon_basin_{amw_tag(quarter)}_{AMW_KINDS[kind]}.geojson"
 
 
 def read_amw(path: Path) -> pd.DataFrame:
