@@ -4,16 +4,21 @@ Run after plan.py, once per frequency and subregion:
     python panel_pipeline/detect.py --run tests_output/pilot --frequency monthly --subregion 6
     ... --from 2018-01 --to 2018-12   only these periods (default: all of the run's)
     ... --limit 1                     only the first tile: one Earth Engine request
+    ... --workers 16 --batch-tiles 100 --tries 2   run-time choices (default: the run's config)
 
 Writes <run>/detect/<frequency>/period=<period>/subregion=<n>/
     part_00001.parquet, ...   one row per chip: chip_id, confidence, six votes, image counts
     _status.json              how far it got, which tiles failed and why, what code ran
+    _lock.json                only while a process writes here: which one (lock.py)
 
 pd.read_parquet("<run>/detect/monthly") reads every part as one table, with the
 folder names as two extra columns (period, subregion); files starting with _ are skipped.
 
 Run the same command again to resume: saved tiles are skipped, failed ones retried.
-Never run two copies on the same frequency and subregion at once.
+Each period's folder is locked while it is written (_lock.json, see lock.py): a second
+copy of this command skips the periods another process is writing.
+On a cluster, one task is one period (--from X --to X); status.py shows how far a run
+has got and prints the commands still to run.
 """
 from __future__ import annotations
 
@@ -21,8 +26,10 @@ import argparse
 import itertools
 import json
 import os
+import signal
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +42,7 @@ from descarteslabs.geo import DLTile
 
 from config import Config, load_config
 from grid import CHIP_PX, chip_ids
+from lock import FolderLock, Locked
 from periods import Period
 from provenance import environment, repo_path, sha256
 
@@ -136,7 +144,8 @@ def score_batch(extractor, tiles: list, model, stride: int):
     waiting = iter(tiles)
     running = {}                                 # download under way -> its tile
     frames, failed = [], {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         while True:
             for tile in itertools.islice(waiting, 2 * workers - len(running)):
                 running[pool.submit(extractor.get_tile_data, tile)] = tile  # AMW: gee.py:289
@@ -149,6 +158,12 @@ def score_batch(extractor, tiles: list, model, stride: int):
                     frames.append(score_tile(tile, future.result(), model, stride))
                 except Exception as err:         # as AMW: note it, retry it in the next try
                     failed[tile.key] = f"{type(err).__name__}: {err}"
+    finally:
+        # Normally every download has finished by now. After an error or a stop signal,
+        # drop the downloads still waiting and don't wait for the running ones, so the
+        # folder's lock is given back at once; the threads only download, and nothing
+        # they fetch after this point is scored or written.
+        pool.shutdown(wait=False, cancel_futures=True)
     return frames, failed
 
 
@@ -183,11 +198,14 @@ def write_part(folder: Path, frames: list[pd.DataFrame]) -> None:
 
 
 def write_status(folder: Path, about: dict, planned: list, errors: dict,
-                 sessions: list) -> dict:
-    """Count what the part files hold, and write it to _status.json, all or nothing."""
+                 sessions: list, counted: tuple[set[int], int] | None = None) -> dict:
+    """Count what the part files hold, and write it to _status.json, all or nothing.
+
+    `counted` (saved tiles, chips) skips the recount, for the updates after each batch.
+    """
     # ADDITION: AMW only logs how many tiles failed (inference_engine.py:1241). We record
     # which ones and why, and which code, packages and machine scored the period.
-    saved, n_chips = saved_tiles(folder)
+    saved, n_chips = counted if counted is not None else saved_tiles(folder)
     missing = {t.key for t in planned if tile_number(t) not in saved}
     failed = {key: err for key, err in errors.items() if key in missing}
     status = about | {
@@ -212,8 +230,12 @@ def utc_now() -> str:
 # ------------------------------------------------------------ one period
 
 def run_period(cfg: Config, period: Period, subregion: int, planned: list,
-               limit: int | None, model, members: list[str], folder: Path) -> dict:
-    """Score a period's tiles batch by batch, with AMW's retries, and record the outcome."""
+               limit: int | None, model, members: list[str], folder: Path,
+               lock: FolderLock) -> dict:
+    """Score a period's tiles batch by batch, with AMW's retries, and record the outcome.
+
+    The caller holds the folder's lock; it is checked before every write.
+    """
     folder.mkdir(parents=True, exist_ok=True)
     for leftover in folder.glob("_*.tmp"):
         leftover.unlink()                        # half-written by a crash; never valid
@@ -221,14 +243,18 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
            if (folder / "_status.json").exists() else {})
     errors = old.get("tiles_failed", {})         # tile key -> its latest error
     sessions = old.get("sessions", []) + [
-        {"started_utc": utc_now(), "finished_utc": None, "limit": limit} | environment(cfg)]
+        {"started_utc": utc_now(), "finished_utc": None, "limit": limit,
+         "max_workers": cfg.imagery.max_workers,       # ADDITION: this session's run-time
+         "batch_tiles": cfg.inference.batch_tiles,     # settings, which --workers,
+         "tries": cfg.inference.tries}                 # --batch-tiles and --tries can change
+        | environment(cfg)]
     about = {
         "period": period.tag,
         "frequency": period.frequency,
         "subregion": subregion,
         "start_date": period.start.isoformat(),
         "end_date_excluded": period.end.isoformat(),
-        "ee_project": cfg.imagery.ee_project,
+        "ee_project": cfg.ee_project,
         "model": repo_path(cfg.inference.model_path),
         "model_members": members,                # vote_1, vote_2, ... in this order
     }
@@ -239,7 +265,7 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
     extractor = extractor_for(cfg, period)
     stride = CHIP_PX // cfg.inference.stride_ratio           # AMW: inference_engine.py:756
     size = cfg.inference.batch_tiles
-    saved, _ = saved_tiles(folder)
+    saved, n_chips = saved_tiles(folder)
     # Same as AMW: `tries` passes, each retrying the tiles the one before could not
     # finish (inference_engine.py:1151-1157). DEVIATION from AMW: a rerun resumes from
     # the part files; AMW starts over and relies on its image cache to be quick.
@@ -248,15 +274,21 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         for start in range(0, len(todo), size):
             batch = todo[start:start + size]
             frames, failed = score_batch(extractor, batch, model, stride)
+            lock.check()                         # still ours? never write into a stolen folder
             if frames:
                 write_part(folder, frames)
+                n_chips += sum(len(f) for f in frames)
             saved |= {tile_number(t) for t in batch if t.key not in failed}
             errors |= failed
+            # ADDITION: the record follows every batch, so status.py, and anyone reading
+            # after a crash, sees how far this session got (counted here, not re-read).
+            write_status(folder, about, planned, errors, sessions, counted=(saved, n_chips))
             print(f"  {period.tag}  try {attempt}: {len(saved):,}/{len(planned):,} tiles "
                   f"saved, {len(failed)} failed in this batch "
                   f"({(time.time() - started) / 60:.1f} min)", flush=True)
 
     sessions[-1]["finished_utc"] = utc_now()
+    lock.check()
     return write_status(folder, about, planned, errors, sessions)
 
 
@@ -287,6 +319,27 @@ def pick_periods(cfg: Config, frequency: str, first: str | None,
     return chosen
 
 
+def with_overrides(cfg: Config, workers: int | None, batch_tiles: int | None,
+                   tries: int | None) -> Config:
+    """The run's settings, with this command's run-time choices in place of the frozen ones."""
+    # ADDITION: these three decide how fast a period is scored and in what pieces, never
+    # what a score is, so a task may choose its own (a laptop and a cluster node differ).
+    # Config is frozen, so `replace` makes a changed copy instead of editing it.
+    imagery = cfg.imagery if workers is None else replace(cfg.imagery, max_workers=workers)
+    inference = replace(cfg.inference,
+                        batch_tiles=cfg.inference.batch_tiles if batch_tiles is None else batch_tiles,
+                        tries=cfg.inference.tries if tries is None else tries)
+    return replace(cfg, imagery=imagery, inference=inference)
+
+
+def stop_on_signal(signum, frame) -> None:
+    """Turn a stop request into a normal Python exit, so `with` blocks clean up (the lock)."""
+    # ADDITION: without this, a scheduler's time limit (SIGTERM) or a closed terminal
+    # (SIGHUP) ends Python at once and leaves the lock behind until it goes stale.
+    raise SystemExit(f"DETECT STOPPED by {signal.Signals(signum).name}; saved parts are "
+                     f"kept. Run the same command again to resume.")
+
+
 def subregion_tiles(run_dir: Path, subregion: int) -> list:
     """The subregion's tiles as planned (plan/tiles.csv), in AMW's order."""
     tiles = pd.read_csv(run_dir / "plan" / "tiles.csv")
@@ -309,6 +362,12 @@ if __name__ == "__main__":
     ap.add_argument("--from", dest="first", help="first period, e.g. 2018-01 or 2018Q1")
     ap.add_argument("--to", dest="last", help="last period")
     ap.add_argument("--limit", type=int, help="score only the first LIMIT tiles (a test)")
+    ap.add_argument("--workers", type=int,
+                    help="parallel downloads (default: the run's imagery.max_workers)")
+    ap.add_argument("--batch-tiles", type=int,
+                    help="tiles per part file (default: the run's inference.batch_tiles)")
+    ap.add_argument("--tries", type=int,
+                    help="passes over failed tiles (default: the run's inference.tries)")
     args = ap.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()
@@ -322,8 +381,11 @@ if __name__ == "__main__":
         raise SystemExit(f"DETECT ERROR: this run has no {args.frequency} periods")
     if args.subregion not in cfg.region.subregion_files:
         raise SystemExit(f"DETECT ERROR: this run has no subregion {args.subregion}")
-    if args.limit is not None and args.limit < 1:
-        raise SystemExit("DETECT ERROR: --limit must be at least 1")
+    for option in ("limit", "workers", "batch_tiles", "tries"):
+        value = getattr(args, option)
+        if value is not None and value < 1:
+            raise SystemExit(f"DETECT ERROR: --{option.replace('_', '-')} must be at least 1")
+    cfg = with_overrides(cfg, args.workers, args.batch_tiles, args.tries)
     check_model(cfg, run_dir)
     periods = pick_periods(cfg, args.frequency, args.first, args.last)
     planned = subregion_tiles(run_dir, args.subregion)
@@ -336,7 +398,7 @@ if __name__ == "__main__":
     # subregion lists (plan.py checks) and we keep every score, so the Andes chips'
     # scores are already here; the 0.2 threshold is applied later, to in_andes chips.
 
-    gee.EE_PROJECT = cfg.imagery.ee_project      # read by AMW's Earth Engine login (gee.py:73)
+    gee.EE_PROJECT = cfg.ee_project              # read by AMW's Earth Engine login (gee.py:73)
     gee._ensure_earth_engine_initialized()       # AMW's login (gee.py:47), first, so a login
                                                  # problem stops us before any folder is made
     apply_darwin_tf_compat()                     # AMW: inference_engine.py:48; macOS only
@@ -344,18 +406,36 @@ if __name__ == "__main__":
                                        compile=False)          # AMW: inference_engine.py:424
     members = member_names(model)
 
+    for name in ("SIGTERM", "SIGHUP", "SIGINT"):  # time limit, closed terminal, Ctrl-C
+        if hasattr(signal, name):                  # (Windows has no SIGHUP)
+            signal.signal(getattr(signal, name), stop_on_signal)
+
     print(f"{len(planned):,} tiles in subregion {args.subregion}, {len(periods)} "
-          f"{args.frequency} periods, {periods[0].tag} to {periods[-1].tag}"
-          + (f", first {args.limit} tile(s) only" if args.limit else ""), flush=True)
-    failed_periods = 0
+          f"{args.frequency} periods, {periods[0].tag} to {periods[-1].tag}, "
+          f"{cfg.imagery.max_workers} download workers, {cfg.inference.batch_tiles} tiles "
+          f"per part" + (f", first {args.limit} tile(s) only" if args.limit else ""),
+          flush=True)
+    failed_periods, locked = 0, []
     for period in periods:
         folder = (run_dir / "detect" / args.frequency / f"period={period.tag}"
                   / f"subregion={args.subregion}")
-        status = run_period(cfg, period, args.subregion, planned, args.limit, model,
-                            members, folder)
+        try:
+            with FolderLock(folder) as lock:     # given back when the block ends, however
+                status = run_period(cfg, period, args.subregion, planned, args.limit,
+                                    model, members, folder, lock)
+        except Locked as busy:                   # another process is writing this period
+            print(f"{period.tag}  SKIPPED: {busy}", flush=True)
+            locked.append(period.tag)
+            continue
         print(f"{period.tag}  {status['tiles_saved']:,}/{status['tiles_planned']:,} tiles "
               f"saved, {len(status['tiles_failed'])} failed  ->  {folder}", flush=True)
         failed_periods += bool(status["tiles_failed"])
+    problems = []
     if failed_periods:
-        raise SystemExit(f"{failed_periods} period(s) have failed tiles (see _status.json); "
-                         f"run the same command again to retry them")
+        problems.append(f"{failed_periods} period(s) have failed tiles (see _status.json); "
+                        f"run the same command again to retry them")
+    if locked:
+        problems.append(f"{len(locked)} period(s) skipped because another process is "
+                        f"writing them: {', '.join(locked)}")
+    if problems:
+        raise SystemExit("\n".join(problems))
