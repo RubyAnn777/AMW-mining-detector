@@ -5,6 +5,7 @@ Run after plan.py, once per frequency and subregion:
     ... --from 2018-01 --to 2018-12   only these periods (default: all of the run's)
     ... --limit 1                     only the first tile: one Earth Engine request
     ... --workers 16 --batch-tiles 100 --tries 2   run-time choices (default: the run's config)
+    ... --image-cache tests_output/image_cache     tests only: keep the downloaded images
 
 Writes <run>/detect/<frequency>/period=<period>/subregion=<n>/
     part_00001.parquet, ...   one row per chip: chip_id, confidence, six votes, image counts
@@ -15,6 +16,7 @@ pd.read_parquet("<run>/detect/monthly") reads every part as one table, with the
 folder names as two extra columns (period, subregion); files starting with _ are skipped.
 
 Run the same command again to resume: saved tiles are skipped, failed ones retried.
+Ctrl-C (or a scheduler's time limit) stops at once and keeps every part already saved.
 Each period's folder is locked while it is written (_lock.json, see lock.py): a second
 copy of this command skips the periods another process is writing.
 On a cluster, one task is one period (--from X --to X); status.py shows how far a run
@@ -26,8 +28,11 @@ import argparse
 import itertools
 import json
 import os
+import shutil
 import signal
+import sys
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -74,8 +79,23 @@ class PanelExtractor(gee.GEE_Data_Extractor):
         return (composite.addBands(scores.count().rename("n_obs"))
                          .addBands(clear.count().rename("n_clear")))
 
+    def save_tile(self, pixels, tile, outdir, product_type="image"):
+        """AMW's cache writer, made all or nothing (used only with --image-cache)."""
+        # ADDITION: AMW writes the GeoTIFF in place (gee.py:469); a stop half-way would
+        # leave a broken image that later runs read. Write it in a folder of its own,
+        # then move it into the cache in one step.
+        writing = Path(outdir) / f"_writing_{uuid.uuid4().hex}"
+        writing.mkdir()
+        try:
+            path = super().save_tile(pixels, tile, writing, product_type)
+            done = Path(outdir) / path.name
+            os.replace(path, done)
+        finally:
+            shutil.rmtree(writing, ignore_errors=True)
+        return done
 
-def extractor_for(cfg: Config, period: Period) -> PanelExtractor:
+
+def extractor_for(cfg: Config, period: Period, image_cache: Path | None) -> PanelExtractor:
     """AMW's downloader for one period, set up from the run's settings."""
     data_config = gee.DataConfig(
         tilesize=cfg.imagery.tilesize,
@@ -88,7 +108,8 @@ def extractor_for(cfg: Config, period: Period) -> PanelExtractor:
         # Ours would hold roughly 200-300 TB, and AMW's stores whole numbers (gee.py:493),
         # so a rerun from it scores slightly different pixels. Every score here uses the
         # pixels exactly as downloaded, like AMW's first pass; resuming avoids re-downloads.
-        image_cache_dir=None,
+        # Tests may keep one (--image-cache) to score the same images again for free.
+        image_cache_dir=image_cache,
     )
     # Dates as text, like AMW's driver. Earth Engine excludes the end date (Period.end).
     return PanelExtractor(period.start.isoformat(), period.end.isoformat(), data_config)
@@ -231,7 +252,7 @@ def utc_now() -> str:
 
 def run_period(cfg: Config, period: Period, subregion: int, planned: list,
                limit: int | None, model, members: list[str], folder: Path,
-               lock: FolderLock) -> dict:
+               lock: FolderLock, image_cache: Path | None) -> dict:
     """Score a period's tiles batch by batch, with AMW's retries, and record the outcome.
 
     The caller holds the folder's lock; it is checked before every write.
@@ -246,7 +267,9 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         {"started_utc": utc_now(), "finished_utc": None, "limit": limit,
          "max_workers": cfg.imagery.max_workers,       # ADDITION: this session's run-time
          "batch_tiles": cfg.inference.batch_tiles,     # settings, which --workers,
-         "tries": cfg.inference.tries}                 # --batch-tiles and --tries can change
+         "tries": cfg.inference.tries,                 # --batch-tiles and --tries can change
+         "image_cache": str(image_cache) if image_cache else None}   # kept images score
+                                                       # slightly differently, so say so
         | environment(cfg)]
     about = {
         "period": period.tag,
@@ -262,7 +285,7 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
 
     work = planned[:limit]                       # --limit: the first tiles only
     started = time.time()
-    extractor = extractor_for(cfg, period)
+    extractor = extractor_for(cfg, period, image_cache)
     stride = CHIP_PX // cfg.inference.stride_ratio           # AMW: inference_engine.py:756
     size = cfg.inference.batch_tiles
     saved, n_chips = saved_tiles(folder)
@@ -332,12 +355,42 @@ def with_overrides(cfg: Config, workers: int | None, batch_tiles: int | None,
     return replace(cfg, imagery=imagery, inference=inference)
 
 
+STOP_SIGNALS = [getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGINT")
+                if hasattr(signal, name)]   # time limit, closed terminal, Ctrl-C (no SIGHUP
+                                            # on Windows)
+
+
+class Stopped(SystemExit):
+    """A stop request (Ctrl-C, a time limit, a closed terminal), as a normal Python exit."""
+
+
 def stop_on_signal(signum, frame) -> None:
     """Turn a stop request into a normal Python exit, so `with` blocks clean up (the lock)."""
     # ADDITION: without this, a scheduler's time limit (SIGTERM) or a closed terminal
     # (SIGHUP) ends Python at once and leaves the lock behind until it goes stale.
-    raise SystemExit(f"DETECT STOPPED by {signal.Signals(signum).name}; saved parts are "
-                     f"kept. Run the same command again to resume.")
+    for stop in STOP_SIGNALS:       # a second Ctrl-C must not interrupt the cleanup
+        signal.signal(stop, signal.SIG_IGN)
+    raise Stopped(f"DETECT STOPPED by {signal.Signals(signum).name}; saved parts are "
+                  f"kept. Run the same command again to resume.")
+
+
+def check_image_cache(cfg: Config, folder: Path) -> Path:
+    """The cache folder, after checking it holds images made with this run's settings."""
+    # AMW's cache file names hold only the collection, tile and dates (gee.py:301), so
+    # images made with other bands or another cloud test would be read without notice.
+    # The folder remembers the settings of its first user, and refuses any other.
+    folder = folder.expanduser().resolve()
+    settings = {"collection": cfg.imagery.collection, "bands": SPECTRAL + COUNTS,
+                "clear_threshold": cfg.imagery.clear_threshold,
+                "tilesize": cfg.imagery.tilesize, "pad": cfg.imagery.pad}
+    record = folder / "_settings.json"
+    folder.mkdir(parents=True, exist_ok=True)
+    if not record.exists():
+        record.write_text(json.dumps(settings, indent=2))
+    elif json.loads(record.read_text()) != settings:
+        raise SystemExit(f"DETECT ERROR: {folder} holds images made with other settings "
+                         f"({record.name}); use another --image-cache folder")
+    return folder
 
 
 def subregion_tiles(run_dir: Path, subregion: int) -> list:
@@ -368,6 +421,10 @@ if __name__ == "__main__":
                     help="tiles per part file (default: the run's inference.batch_tiles)")
     ap.add_argument("--tries", type=int,
                     help="passes over failed tiles (default: the run's inference.tries)")
+    ap.add_argument("--image-cache", type=Path,
+                    help="tests only: keep each downloaded image in this folder and read it "
+                         "from there next time (about 9 MB per tile and period; scores "
+                         "from a kept image differ slightly from a fresh download)")
     args = ap.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()
@@ -386,6 +443,7 @@ if __name__ == "__main__":
         if value is not None and value < 1:
             raise SystemExit(f"DETECT ERROR: --{option.replace('_', '-')} must be at least 1")
     cfg = with_overrides(cfg, args.workers, args.batch_tiles, args.tries)
+    image_cache = check_image_cache(cfg, args.image_cache) if args.image_cache else None
     check_model(cfg, run_dir)
     periods = pick_periods(cfg, args.frequency, args.first, args.last)
     planned = subregion_tiles(run_dir, args.subregion)
@@ -406,30 +464,38 @@ if __name__ == "__main__":
                                        compile=False)          # AMW: inference_engine.py:424
     members = member_names(model)
 
-    for name in ("SIGTERM", "SIGHUP", "SIGINT"):  # time limit, closed terminal, Ctrl-C
-        if hasattr(signal, name):                  # (Windows has no SIGHUP)
-            signal.signal(getattr(signal, name), stop_on_signal)
+    for stop in STOP_SIGNALS:
+        signal.signal(stop, stop_on_signal)
 
     print(f"{len(planned):,} tiles in subregion {args.subregion}, {len(periods)} "
           f"{args.frequency} periods, {periods[0].tag} to {periods[-1].tag}, "
           f"{cfg.imagery.max_workers} download workers, {cfg.inference.batch_tiles} tiles "
-          f"per part" + (f", first {args.limit} tile(s) only" if args.limit else ""),
-          flush=True)
+          f"per part" + (f", first {args.limit} tile(s) only" if args.limit else "")
+          + (f", images kept in {image_cache}" if image_cache else ""), flush=True)
     failed_periods, locked = 0, []
-    for period in periods:
-        folder = (run_dir / "detect" / args.frequency / f"period={period.tag}"
-                  / f"subregion={args.subregion}")
-        try:
-            with FolderLock(folder) as lock:     # given back when the block ends, however
-                status = run_period(cfg, period, args.subregion, planned, args.limit,
-                                    model, members, folder, lock)
-        except Locked as busy:                   # another process is writing this period
-            print(f"{period.tag}  SKIPPED: {busy}", flush=True)
-            locked.append(period.tag)
-            continue
-        print(f"{period.tag}  {status['tiles_saved']:,}/{status['tiles_planned']:,} tiles "
-              f"saved, {len(status['tiles_failed'])} failed  ->  {folder}", flush=True)
-        failed_periods += bool(status["tiles_failed"])
+    try:
+        for period in periods:
+            folder = (run_dir / "detect" / args.frequency / f"period={period.tag}"
+                      / f"subregion={args.subregion}")
+            try:
+                with FolderLock(folder) as lock:     # given back when the block ends, however
+                    status = run_period(cfg, period, args.subregion, planned, args.limit,
+                                        model, members, folder, lock, image_cache)
+            except Locked as busy:                   # another process is writing this period
+                print(f"{period.tag}  SKIPPED: {busy}", flush=True)
+                locked.append(period.tag)
+                continue
+            print(f"{period.tag}  {status['tiles_saved']:,}/{status['tiles_planned']:,} "
+                  f"tiles saved, {len(status['tiles_failed'])} failed  ->  {folder}",
+                  flush=True)
+            failed_periods += bool(status["tiles_failed"])
+    except Stopped as stopped:
+        # The lock is given back and every saved part is complete. Downloads may still be
+        # running in their threads, and a normal exit would wait for them (up to AMW's
+        # 240 s of retries, gee.py:288); nothing they fetch is used, so leave now.
+        print(stopped.code, file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        os._exit(1)
     problems = []
     if failed_periods:
         problems.append(f"{failed_periods} period(s) have failed tiles (see _status.json); "
