@@ -62,3 +62,5 @@ data/staging_source-coop/
 # Local test runs of panel_pipeline (run.output_root: "tests_output"); outputs, not code.
 tests_output/
 test_region_small_19.10.2026/
+# AMW's published files for the comparison (downloaded, about 200 MB): amw_comparison/README.md
+amw_comparison/data/
