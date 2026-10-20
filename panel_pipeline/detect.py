@@ -417,9 +417,13 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
     workers, size = cfg.imagery.max_workers, cfg.inference.batch_tiles
     saved, n_chips = saved_tiles(folder)
     log = Log(folder / "_log.txt")
-    log.write(f"  {period.tag}  session started: {len(saved):,}/{len(planned):,} tiles "
-              f"already saved, {workers} workers, a part every {size} tiles or "
-              f"{flush_minutes:g} min", screen=False)
+    # ADDITION: say on screen what a resume skips, so a rerun visibly scores nothing twice.
+    parts = len(list(folder.glob("part_*.parquet")))
+    to_score = sum(tile_number(t) not in saved for t in work)
+    log.write(f"  {period.tag}  " + (f"resuming: {len(saved):,}/{len(planned):,} tiles "
+              f"already saved in {parts} part file(s), not scored again; " if saved
+              else "starting: ") + f"{to_score:,} tiles to score, {workers} workers, "
+              f"a part every {size} tiles or {flush_minutes:g} min")
 
     # Same as AMW: `tries` passes, each retrying the tiles the one before could not
     # finish (inference_engine.py:1151-1157). DEVIATION from AMW: a rerun resumes from
@@ -428,6 +432,9 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         todo = [t for t in work if tile_number(t) not in saved]
         if not todo:
             break
+        if attempt > 1:
+            log.write(f"  {period.tag}  try {attempt}: retrying {len(todo):,} tiles that "
+                      f"failed in try {attempt - 1}")
         before = len(saved)
         scored, failed, window = [], {}, []      # since the last save / the last line
         last, retries = time.monotonic(), RETRIES.count
