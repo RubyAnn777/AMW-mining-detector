@@ -30,7 +30,7 @@ imagery:                            # their gee.DataConfig values
   tilesize: 552
   pad: 12
   clear_threshold: 0.6
-  max_workers: 6
+  max_workers: 12
 
 inference:                          # their InferenceConfig values
   stride_ratio: 2
