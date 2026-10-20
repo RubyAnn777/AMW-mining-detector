@@ -6,6 +6,7 @@ Run after plan.py, once per frequency and subregion:
     ... --limit 1                     only the first tile: one Earth Engine request
     ... --workers 16 --batch-tiles 100 --tries 2   run-time choices (default: the run's config)
     ... --flush-minutes 2             save a part at least this often (default 2)
+    ... --mac-eager                   on macOS, AMW's slower TensorFlow setting (if crashes)
     ... --image-cache tests_output/image_cache     tests only: keep the downloaded images
 
 Writes <run>/detect/<frequency>/period=<period>/subregion=<n>/
@@ -41,6 +42,7 @@ import itertools
 import json
 import logging
 import os
+import platform
 import shutil
 import signal
 import sys
@@ -375,7 +377,8 @@ def utc_now() -> str:
 
 def run_period(cfg: Config, period: Period, subregion: int, planned: list,
                limit: int | None, model, members: list[str], folder: Path,
-               lock: FolderLock, image_cache: Path | None, flush_minutes: float) -> dict:
+               lock: FolderLock, image_cache: Path | None, flush_minutes: float,
+               tf_eager: bool) -> dict:
     """Score a period's tiles, saving a part every few minutes, with AMW's retries.
 
     The caller holds the folder's lock; it is checked before every write.
@@ -395,6 +398,7 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
          "max_workers": cfg.imagery.max_workers,       # ADDITION: this session's run-time
          "batch_tiles": cfg.inference.batch_tiles,     # settings, which --workers,
          "flush_minutes": flush_minutes,               # --batch-tiles, --flush-minutes
+         "tf_eager": tf_eager,                         # --mac-eager
          "tries": cfg.inference.tries,                 # and --tries can change
          "image_cache": str(image_cache) if image_cache else None}   # kept images score
                                                        # slightly differently, so say so
@@ -638,6 +642,9 @@ if __name__ == "__main__":
                     help=f"save a part at least this often (default: {FLUSH_MINUTES:g})")
     ap.add_argument("--tries", type=int,
                     help="passes over failed tiles (default: the run's inference.tries)")
+    ap.add_argument("--mac-eager", action="store_true",
+                    help="on macOS, score with AMW's TensorFlow setting (tf_darwin.py): "
+                         "about 1.6 times slower, use it if scoring crashes without it")
     ap.add_argument("--image-cache", type=Path,
                     help="tests only: keep each downloaded image in this folder and read it "
                          "from there next time (about 9 MB per tile and period; scores "
@@ -678,7 +685,14 @@ if __name__ == "__main__":
     gee.EE_PROJECT = cfg.ee_project              # read by AMW's Earth Engine login (gee.py:73)
     gee._ensure_earth_engine_initialized()       # AMW's login (gee.py:47), first, so a login
                                                  # problem stops us before any folder is made
-    apply_darwin_tf_compat()                     # AMW: inference_engine.py:48; macOS only
+    # DEVIATION from AMW: AMW switches TensorFlow to step-by-step ("eager") execution on
+    # macOS (tf_darwin.py, inference_engine.py:48), against crashes it saw with Apple's
+    # graphics chips. By default we don't, so a Mac scores like Linux (AMW's VMs, the
+    # cluster): compiled, 1.6 times faster on Ruby's Mac (bench_scoring.py, 2026-10-20),
+    # scores within 1.2e-07 of eager ones (float32 rounding). --mac-eager restores it.
+    tf_eager = args.mac_eager and platform.system() == "Darwin"
+    if tf_eager:
+        apply_darwin_tf_compat()
     model = tf.keras.models.load_model(str(cfg.inference.model_path),
                                        compile=False)          # AMW: inference_engine.py:424
     members = member_names(model)
@@ -703,7 +717,7 @@ if __name__ == "__main__":
                 with FolderLock(folder) as lock:     # given back when the block ends, however
                     status = run_period(cfg, period, args.subregion, planned, args.limit,
                                         model, members, folder, lock, image_cache,
-                                        args.flush_minutes)
+                                        args.flush_minutes, tf_eager)
             except Locked as busy:                   # another process is writing this period
                 print(f"{period.tag}  SKIPPED: {busy}", flush=True)
                 locked.append(period.tag)
