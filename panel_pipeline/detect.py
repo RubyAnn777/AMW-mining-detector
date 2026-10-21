@@ -170,6 +170,7 @@ def score_tile(tile, pixels: np.ndarray, model, stride: int) -> pd.DataFrame:
 
 FLUSH_MINUTES = 2.0       # --flush-minutes default: save a part at least this often
 SLOW_DOWNLOAD_S = 120     # a download slower than this gets its own line in _log.txt
+REQUEST_TIMEOUT_S = 300   # give up on an Earth Engine answer silent for this long
 
 
 def download(extractor, tile):
@@ -685,6 +686,13 @@ if __name__ == "__main__":
     gee.EE_PROJECT = cfg.ee_project              # read by AMW's Earth Engine login (gee.py:73)
     gee._ensure_earth_engine_initialized()       # AMW's login (gee.py:47), first, so a login
                                                  # problem stops us before any folder is made
+    # ADDITION: AMW sets no time limit on Earth Engine requests, and its client sets none
+    # by default (ee/_state.py: deadline_ms = 0), so a request whose connection died (a
+    # computer that slept, a network drop) waits forever and holds its worker: on
+    # 2026-10-20 all 24 workers hung this way after a Mac went to sleep. With a limit, the
+    # client retries such a request (up to 5 times, googleapiclient), then the tile fails
+    # and is tried again in the next try. 300 s: the slowest download seen took 202 s.
+    ee.data.setDeadline(REQUEST_TIMEOUT_S * 1000)
     # DEVIATION from AMW: AMW switches TensorFlow to step-by-step ("eager") execution on
     # macOS (tf_darwin.py, inference_engine.py:48), against crashes it saw with Apple's
     # graphics chips. By default we don't, so a Mac scores like Linux (AMW's VMs, the
