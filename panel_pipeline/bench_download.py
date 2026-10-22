@@ -10,7 +10,9 @@ in EECU-seconds, which is what a project's monthly quota counts):
     panel     what detect.py downloads: AMW's recipe plus the two image counts
     bounded   the same as panel, but every image collection is first cut to the tile's
               footprint (filterBounds), so Earth Engine only joins and scans the images
-              that touch the tile. If its pixels equal panel's, it is a free speed-up
+              that touch the tile. On 22 Oct (5 tiles of subregion 3, 2026Q3) its pixels
+              equalled panel's, but it saved no work reliably: Earth Engine already loads
+              only the images that touch a tile, and the median is most of the cost
 Each "bounded" tile is downloaded again as "panel", and the two are compared pixel by
 pixel. "amw" uses other tiles, so no request can reuse another's results.
 
