@@ -83,7 +83,11 @@ class PanelExtractor(gee.GEE_Data_Extractor):
     """AMW's Earth Engine downloader, plus two bands that count images per pixel."""
 
     def _build_composite(self, start_date, end_date):
-        composite = super()._build_composite(start_date, end_date)   # AMW's median, unchanged
+        # ADDITION: sent as 32-bit numbers. AMW's median arrives as 64-bit numbers (8 bytes
+        # per band and pixel, about 40 MB a tile) and is cut to 32 bits on arrival
+        # (gee.py:378, and score_tile scores 32-bit numbers), so cutting it on Earth
+        # Engine's side instead gives the same values in half the download.
+        composite = super()._build_composite(start_date, end_date).toFloat()   # AMW's median
         # ADDITION: per pixel, the images AMW's recipe could use (n_obs: those with a
         # cloud score, cloudy or clear) and those passing its cloud test (n_clear: what
         # the median is made of). Same collections, dates and test as gee.py:208-229.
@@ -93,8 +97,8 @@ class PanelExtractor(gee.GEE_Data_Extractor):
                                   ["cs_cdf"])
                   .select("cs_cdf"))
         clear = scores.map(lambda img: img.updateMask(img.gte(self.config.clear_threshold)))
-        return (composite.addBands(scores.count().rename("n_obs"))
-                         .addBands(clear.count().rename("n_clear")))
+        return (composite.addBands(scores.count().rename("n_obs").toUint16())
+                         .addBands(clear.count().rename("n_clear").toUint16()))
 
     def save_tile(self, pixels, tile, outdir, product_type="image"):
         """AMW's cache writer, made all or nothing (used only with --image-cache)."""

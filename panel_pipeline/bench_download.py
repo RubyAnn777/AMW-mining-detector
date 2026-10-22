@@ -14,7 +14,8 @@ in EECU-seconds, which is what a project's monthly quota counts):
 Each "bounded" tile is downloaded again as "panel", and the two are compared pixel by
 pixel. "amw" uses other tiles, so no request can reuse another's results.
 
-Sends 3 x --tiles requests to the run's Earth Engine project; writes nothing.
+Also prints how many MB each answer was: at a given internet speed, the time a download
+needs grows with it. Sends 3 x --tiles requests to the run's Earth Engine project; writes nothing.
 """
 from __future__ import annotations
 
@@ -49,16 +50,31 @@ class Bounded(detect.PanelExtractor):
         t = self.config.clear_threshold
         composite = (s2.linkCollection(cs, ["cs_cdf"])
                      .map(lambda img: img.updateMask(img.select("cs_cdf").gte(t)))
-                     .median())
+                     .median().toFloat())
         scores = s2.linkCollection(cs, ["cs_cdf"]).select("cs_cdf")
         clear = scores.map(lambda img: img.updateMask(img.gte(t)))
-        return (composite.addBands(scores.count().rename("n_obs"))
-                         .addBands(clear.count().rename("n_clear")))
+        return (composite.addBands(scores.count().rename("n_obs").toUint16())
+                         .addBands(clear.count().rename("n_clear").toUint16()))
 
     def get_tile_data(self, tile):
         self.region = ee.Geometry.Rectangle(tile.geometry.bounds)
         self.composite = self._build_composite(self.start_date, self.end_date)
         return super().get_tile_data(tile)
+
+
+RECEIVED = {}                                    # the last answer's size and number type
+_compute_pixels = ee.data.computePixels
+
+
+def measured_compute_pixels(params, *args, **kwargs):
+    """ee.data.computePixels, noting the size of what Earth Engine sent back."""
+    pixels = _compute_pixels(params, *args, **kwargs)
+    RECEIVED["mb"] = pixels.nbytes / 1e6
+    RECEIVED["dtype"] = str(pixels.dtype)
+    return pixels
+
+
+ee.data.computePixels = measured_compute_pixels  # gee.py looks it up at every call
 
 
 def profiled(extractor, tile) -> tuple[np.ndarray, float, str]:
@@ -125,16 +141,18 @@ if __name__ == "__main__":
             pixels, seconds, profile = profiled(extractor, t)
             profiles.setdefault(name, profile)
             rows.append({"recipe": name, "tile": t.key, "seconds": seconds,
-                         "eecu_s": eecu_seconds(profile), "pixels": pixels})
+                         "eecu_s": eecu_seconds(profile), "mb": RECEIVED["mb"],
+                         "pixels": pixels})
             print(f"  {name:<8} {t.key:<26} {seconds:6.1f} s, "
-                  f"{rows[-1]['eecu_s']:8.1f} EECU-s", flush=True)
+                  f"{rows[-1]['eecu_s']:8.1f} EECU-s, {RECEIVED['mb']:5.1f} MB of pixels "
+                  f"({RECEIVED['dtype'][:60]})", flush=True)
         a, b = rows[-3]["pixels"], rows[-2]["pixels"]
         same = np.array_equal(a, b, equal_nan=True)
         print(f"  bounded vs panel pixels: {'identical' if same else 'DIFFERENT'}"
               + ("" if same else f", largest difference {np.nanmax(np.abs(a - b)):.4g}, "
                  f"{np.mean(a != b):.2%} of values differ") + "\n", flush=True)
 
-    table = pd.DataFrame(rows).groupby("recipe")[["seconds", "eecu_s"]].mean()
+    table = pd.DataFrame(rows).groupby("recipe")[["seconds", "eecu_s", "mb"]].mean()
     print("Average per tile:\n" + table.round(1).to_string())
     print("\nWhere panel's EECU-seconds go (Earth Engine's profile of its first request):")
     print("\n".join(profiles["panel"].strip().splitlines()[:15]))
