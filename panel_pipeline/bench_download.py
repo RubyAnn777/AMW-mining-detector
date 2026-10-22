@@ -62,7 +62,7 @@ class Bounded(detect.PanelExtractor):
         return super().get_tile_data(tile)
 
 
-RECEIVED = {}                                    # the last answer's size and number type
+RECEIVED = {}                                    # the size of the last answer
 _compute_pixels = ee.data.computePixels
 
 
@@ -70,7 +70,6 @@ def measured_compute_pixels(params, *args, **kwargs):
     """ee.data.computePixels, noting the size of what Earth Engine sent back."""
     pixels = _compute_pixels(params, *args, **kwargs)
     RECEIVED["mb"] = pixels.nbytes / 1e6
-    RECEIVED["dtype"] = str(pixels.dtype)
     return pixels
 
 
@@ -78,14 +77,26 @@ ee.data.computePixels = measured_compute_pixels  # gee.py looks it up at every c
 
 
 def profiled(extractor, tile) -> tuple[np.ndarray, float, str]:
-    """Download one tile; its pixels, seconds, and Earth Engine's profile of the request."""
+    """Download one tile; its pixels, seconds, and Earth Engine's profile of the request.
+
+    Earth Engine sometimes answers "Profile not found" for a request it did answer (seen
+    on 22 Oct); ee.profilePrinting (ee/_helpers.py) retries for the same reason. If it
+    still has none after three tries, the profile is "".
+    """
     ids = []
     started = time.perf_counter()
     with ee.data.profiling(ids.append):
         pixels = extractor.get_tile_data(tile)
     seconds = time.perf_counter() - started
     get_profiles = ee.ApiFunction.lookup("Profile.getProfiles").call
-    return pixels, seconds, get_profiles(ids=ids).getInfo() if ids else ""
+    for _ in range(3):
+        try:
+            return pixels, seconds, get_profiles(ids=ids).getInfo() if ids else ""
+        except ee.EEException as e:
+            if "not found" not in str(e):
+                raise
+            time.sleep(5)
+    return pixels, seconds, ""
 
 
 def eecu_seconds(profile: str) -> float:
@@ -135,24 +146,34 @@ if __name__ == "__main__":
     print(f"{args.period}, tiles {args.start} to {args.start + 2 * args.tiles - 1} of "
           f"{run_dir.name}, one request at a time\n", flush=True)
     rows, profiles = [], {}
-    for tile, other in zip(tiles[:args.tiles], tiles[args.tiles:]):
-        for name, extractor, t in (("bounded", bounded, tile), ("panel", panel, tile),
-                                   ("amw", amw, other)):
+    pairs = (("bounded", bounded), ("panel", panel))
+    for i, (tile, other) in enumerate(zip(tiles[:args.tiles], tiles[args.tiles:])):
+        # bounded and panel take turns going first, in case the second one of a tile
+        # profits from work Earth Engine kept from the first
+        order = pairs if i % 2 == 0 else pairs[::-1]
+        for name, extractor, t in (*((n, e, tile) for n, e in order), ("amw", amw, other)):
             pixels, seconds, profile = profiled(extractor, t)
-            profiles.setdefault(name, profile)
+            if profile:
+                profiles.setdefault(name, profile)
             rows.append({"recipe": name, "tile": t.key, "seconds": seconds,
                          "eecu_s": eecu_seconds(profile), "mb": RECEIVED["mb"],
                          "pixels": pixels})
             print(f"  {name:<8} {t.key:<26} {seconds:6.1f} s, "
-                  f"{rows[-1]['eecu_s']:8.1f} EECU-s, {RECEIVED['mb']:5.1f} MB of pixels "
-                  f"({RECEIVED['dtype'][:60]})", flush=True)
-        a, b = rows[-3]["pixels"], rows[-2]["pixels"]
-        same = np.array_equal(a, b, equal_nan=True)
-        print(f"  bounded vs panel pixels: {'identical' if same else 'DIFFERENT'}"
-              + ("" if same else f", largest difference {np.nanmax(np.abs(a - b)):.4g}, "
-                 f"{np.mean(a != b):.2%} of values differ") + "\n", flush=True)
+                  + (f"{rows[-1]['eecu_s']:8.1f} EECU-s" if profile else "  no profile")
+                  + f", {RECEIVED['mb']:5.1f} MB of pixels", flush=True)
+            if name == order[1][0]:                  # both recipes have this tile now
+                a, b = rows[-2]["pixels"], rows[-1]["pixels"]     # (H, W, bands) float32
+                same = np.array_equal(a, b, equal_nan=True)
+                differ = ~((a == b) | (np.isnan(a) & np.isnan(b)))
+                print(f"  bounded vs panel pixels: {'identical' if same else 'DIFFERENT'}"
+                      + ("" if same else
+                         f", largest difference {np.nanmax(np.abs(a - b)):.4g}, "
+                         f"{differ.mean():.2%} of values differ"), flush=True)
+        print(flush=True)
 
     table = pd.DataFrame(rows).groupby("recipe")[["seconds", "eecu_s", "mb"]].mean()
     print("Average per tile:\n" + table.round(1).to_string())
-    print("\nWhere panel's EECU-seconds go (Earth Engine's profile of its first request):")
-    print("\n".join(profiles["panel"].strip().splitlines()[:15]))
+    for name in ("panel", "bounded"):
+        if name in profiles:
+            print(f"\nWhere {name}'s EECU-seconds go (Earth Engine's profile of one request):")
+            print("\n".join(profiles[name].strip().splitlines()[:15]))
