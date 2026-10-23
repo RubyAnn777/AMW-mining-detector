@@ -29,7 +29,8 @@ Contents
   - [B3. A run on the cluster, step by step](#b3-a-run-on-the-cluster-step-by-step)
   - [B4. The Earth Engine ceiling](#b4-the-earth-engine-ceiling-read-before-planning-a-big-run)
   - [B5. Storage and backup](#b5-storage-and-backup)
-  - [B6. If something breaks](#b6-if-something-breaks)
+  - [B6. Getting the results](#b6-getting-the-results-on-goethe-or-copied-to-a-laptop)
+  - [B7. If something breaks](#b7-if-something-breaks)
 
 ---
 
@@ -213,7 +214,9 @@ columns. Files starting with `_` are skipped by Parquet readers.
 `confidence` (AMW's score, float64, mean of the six votes), `vote_1` … `vote_6`
 (float32, one per ensemble member, in the order listed in `_status.json`), `n_obs`
 and `n_clear` (mean number of images per pixel, all and cloud-free), `empty_share`
-(share of pixels with no clear image).
+(share of pixels with no clear image), and more quality columns: `n_clear_median`,
+`thin_share`, `clear_day_mean`, `cs_mean`, `cs_clear_mean`, `ndvi_mean`, `bsi_mean`,
+`cirrus_mean`. What each means and how to read them: A6.
 
 **The progress line**, once per save:
 
@@ -263,18 +266,93 @@ It reads only; it is safe while detect.py runs.
 
 ### A6. Reading the output
 
+#### The quality columns
+
+Earth Engine first counts **per pixel** (10 m), then detect.py **averages over the
+chip's 2,304 pixels** (48 × 48). A pixel's counts are whole numbers; a chip's are
+averages, which is why they have decimals.
+
+| Column | Per pixel | Per chip (what is stored) |
+|---|---|---|
+| `n_obs` | Sentinel-2 images of the period that cover the pixel (cloudy or not) | their mean over the chip; a whole number unless the chip lies where two satellite tracks overlap (about 1% of chips) |
+| `n_clear` | of those, the images passing the cloud test (Cloud Score+ `cs_cdf ≥ 0.6`): exactly the images the median picture is made of | their mean over the chip |
+| `n_clear_median` | | the median pixel's clear images: half the chip has at least this many. Less pulled by a few very well seen pixels than the mean |
+| `empty_share` | no clear image: the median has nothing, the pixel is 0 in every band (black to the model) | the share of such pixels, 0 to 1 |
+| `thin_share` | 1 or 2 clear images: the "median" is really one picture, or the average of two | the share of such pixels. `1 - empty_share - thin_share` is the share with 3 or more |
+| `clear_day_mean` | the days of the clear images (0 = the period's first day) | their average over all clear pixel-images of the chip: the date the picture mostly shows. Missing if the chip has no clear image |
+| `cs_mean` | Cloud Score+ `cs_cdf` of every image (1 = clear, 0 = cloud) | its average over all images and pixels: how clear the period was, cloudy images included. Continuous, unlike the 0.6 cut |
+| `cs_clear_mean` | the same, over the clear images only | how clean the images in the median were: 0.95 is crisp, near 0.6 means haze or thin cloud just passed the test |
+| `ndvi_mean` | (B8 − B4) / (B8 + B4) of the composite: greenness, −1 to 1 | average over the pixels with data. Forest ≈ 0.8, bare soil or water near 0 or below |
+| `bsi_mean` | ((B11 + B4) − (B8 + B2)) / ((B11 + B4) + (B8 + B2)): bare soil index | average over the pixels with data. Higher = more bare soil |
+| `cirrus_mean` | B10 (cirrus band) reflectance of the composite, 0 to 1 | average over the pixels with data. Near 0 is clean; higher means high haze left in the picture |
+
+The three last columns describe the picture itself, so they are controls and secondary
+outcomes as much as quality measures. All of these come from the one Earth Engine
+request per tile (two of them, `cs_mean` and `cs_clear_mean`, from two extra bands; the
+indices from the pixels already downloaded).
+
+Worked examples:
+
+- `n_obs 9, n_clear 0.45, empty_share 0.55` (May 2026, test_region). 9 images covered
+  the chip. 55% of its pixels had no clear image at all; the other 45% had one each:
+  0.45 × 1 + 0.55 × 0 = 0.45. The model saw a chip that is more than half black.
+- `n_obs 7, n_clear 1.29, empty_share 0.70`. 7 images covered the chip. 70% of its
+  pixels were cloudy in all 7; the other 30% had on average 1.29 / 0.30 ≈ 4.3 clear
+  images each. A chip half under a cloud that never moved, half clear most of the time.
+- `n_obs 18, n_clear 12.0, empty_share 0, clear_day_mean 70` (a made-up quarter, Q1).
+  Every pixel has data, from about 12 clear images per pixel. The clear images were
+  taken on average on day 70, i.e. 12 March: the picture shows March more than
+  January, because January was cloudy. If the same chip's Q2 picture has
+  `clear_day_mean 20` (21 April), the two pictures are only 40 days apart, not 91, and a
+  change between them happened in those 40 days.
+
+So **`n_clear` is not a share**: 0.45 means "0.45 clear images per pixel on average",
+not "45% clear". Three useful quantities follow from the columns, with no new download:
+
+- `1 - empty_share`: the share of the chip the model actually saw.
+- `n_clear / (1 - empty_share)`: the clear images per pixel *where there was any*, i.e.
+  how solid the median is on the visible part.
+- `period start + clear_day_mean days`: the date the composite mostly shows. Compare it
+  across periods before reading a change as growth in that period.
+
+Expect `n_clear <= n_obs`, `empty_share` near 0 in the dry season, `clear_day_mean`
+between 0 and the period's length, and missing exactly where `n_clear` is 0. A
+month's `n_obs` and `n_clear` add up exactly to its quarter's (measured, `docs/findings.md`
+§1); the other columns do not (averages, and each period counts its days from its own start).
+Runs scored before 23 Oct have only `n_obs`, `n_clear` and `empty_share`.
+
+#### Reading it in Python (laptop or Goethe, the same code)
+
+detect's output, every period of one frequency (only the columns you need, to save memory):
+
 ```python
 import pandas as pd
-d = pd.read_parquet("tests_output/test_region_2026-10-19/detect/quarterly")
-# columns: chip_id, confidence, vote_1..6, n_obs, n_clear, empty_share, period, subregion
-d.groupby("period")["confidence"].describe()
+run = "tests_output/test_region_2026-10-19"          # on Goethe: "/work/<group>/<user>/runs/<run>"
+cols = ["chip_id", "confidence", "n_clear", "empty_share", "thin_share", "clear_day_mean", "cs_mean"]
+d = pd.read_parquet(f"{run}/detect/quarterly", columns=cols)   # adds period and subregion
+d.groupby("period")[["n_clear", "empty_share", "clear_day_mean"]].describe()
 (d.confidence > 0.4).groupby(d.period).sum()          # AMW's raw detections per quarter
+
+one = pd.read_parquet(f"{run}/detect/quarterly/period=2026Q1/subregion=2")   # one task
+some = pd.read_parquet(f"{run}/detect/quarterly", columns=cols,
+                       filters=[("period", "in", ["2026Q1", "2026Q2"])])     # a few periods
 ```
 
-Expect `n_clear <= n_obs`, `confidence` in 0..1, `empty_share` near 0 in the dry season.
+The assembled panel (after A7), layers side by side, with `scored` and AMW's flags:
+
+```python
+import sys; sys.path.insert(0, "panel_pipeline/lib")  # from the repository root
+from read_panel import read_panel
+q = read_panel(run, "quarterly")                      # scores + postprocess, every period
+q = read_panel(run, "quarterly", periods=["2026Q1"],
+               columns={"scores": ["confidence", "n_clear", "empty_share", "clear_day_mean"],
+                        "postprocess": ["det_raw"]})
+```
+
 `panel_pipeline/checks/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
-Reading a whole period of the full Amazon this way needs ~18 GB of memory; read one
-`period=` folder, or a few columns, on a laptop.
+Reading a whole period of the full Amazon this way needs ~18 GB of memory; on a laptop,
+read one `period=` folder, or a few columns. On Goethe, anything bigger than a test area
+is read inside a job (B6), not on the login node.
 
 ### A7. Assembly (next step)
 
@@ -397,7 +475,37 @@ Size: one complete task is one `part_00000.parquet`; a tile-period is ~22 KB (52
 ~42 B). Full Amazon detect ≈ 0.8 TB, 840 files. Nothing is deleted after assembly (Rmd
 D11), so plan for about 2 TB on `/work` plus the archive copies.
 
-### B6. If something breaks
+### B6. Getting the results: on Goethe, or copied to a laptop
+
+**On Goethe**, read with the code of A6, in a job: the login node is shared and kills
+big processes.
+
+```bash
+salloc --partition=test --nodes=1 --time=1:55:00 --mem=0     # an interactive node
+source cluster/goethe_env.sh
+srun python -c "import pandas as pd; d = pd.read_parquet('/work/<group>/<user>/runs/<run>/detect/quarterly', columns=['period', 'n_clear']); print(d.groupby('period').n_clear.describe())"
+exit
+```
+
+**To a laptop**, copy with `rsync` from the laptop's terminal (it copies only what is new
+or changed, so run it again at any time). The detect and panel folders keep their
+layout, so the same A6 code reads the copy:
+
+```bash
+# one frequency's detect output, or one period of it
+rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/detect/quarterly/ \
+          tests_output/<run>/detect/quarterly/
+rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/detect/quarterly/period=2026Q1/ \
+          tests_output/<run>/detect/quarterly/period=2026Q1/
+# the assembled panel, plus the plan (chip squares, for maps)
+rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/{panel,plan,run} tests_output/<run>/
+```
+
+Copy only finished tasks (`#` in status.py): a running task's part files change every
+few minutes. A subregion-quarter of the full run is roughly 1 GB, all of quarterly
+detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or one subregion.
+
+### B7. If something breaks
 
 | Symptom | Cause | What to do |
 |---|---|---|
@@ -411,3 +519,4 @@ D11), so plan for about 2 TB on `/work` plus the archive copies.
 | `PLAN ERROR: … already exists` | planning the same run twice | a run is planned once; choose a new `run.name` |
 | `DETECT ERROR: … has changed since this run was planned` | the model file differs | one run uses one model; new run |
 | `quota` shows `/work` nearly full | | archive finished periods, ask the group about the quota |
+| `DETECT ERROR: … written by detect.py before the quality columns of 23 Oct` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |
