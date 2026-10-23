@@ -214,8 +214,9 @@ columns. Files starting with `_` are skipped by Parquet readers.
 `confidence` (AMW's score, float64, mean of the six votes), `vote_1` … `vote_6`
 (float32, one per ensemble member, in the order listed in `_status.json`), `n_obs`
 and `n_clear` (mean number of images per pixel, all and cloud-free), `empty_share`
-(share of pixels with no clear image), `clear_day_mean` (the average day of the clear
-images, 0 = the period's first day). What these four mean and how to read them: A6.
+(share of pixels with no clear image), and more quality columns: `n_clear_median`,
+`thin_share`, `clear_day_mean`, `cs_mean`, `cs_clear_mean`, `ndvi_mean`, `bsi_mean`,
+`cirrus_mean`. What each means and how to read them: A6.
 
 **The progress line**, once per save:
 
@@ -271,12 +272,24 @@ Earth Engine first counts **per pixel** (10 m), then detect.py **averages over t
 chip's 2,304 pixels** (48 × 48). A pixel's counts are whole numbers; a chip's are
 averages, which is why they have decimals.
 
-| Column | Per pixel (Earth Engine) | Per chip (what is stored) |
+| Column | Per pixel | Per chip (what is stored) |
 |---|---|---|
 | `n_obs` | Sentinel-2 images of the period that cover the pixel (cloudy or not) | their mean over the chip; a whole number unless the chip lies where two satellite tracks overlap (about 1% of chips) |
 | `n_clear` | of those, the images passing the cloud test (Cloud Score+ `cs_cdf ≥ 0.6`): exactly the images the median picture is made of | their mean over the chip |
-| `empty_share` | the pixel has no clear image, so the median has nothing and the pixel is 0 in every band (black to the model) | the share of such pixels, 0 to 1 |
-| `clear_day_mean` | the days of the clear images (0 = the period's first day) | their average over all clear pixel-images of the chip; missing if the chip has none |
+| `n_clear_median` | | the median pixel's clear images: half the chip has at least this many. Less pulled by a few very well seen pixels than the mean |
+| `empty_share` | no clear image: the median has nothing, the pixel is 0 in every band (black to the model) | the share of such pixels, 0 to 1 |
+| `thin_share` | 1 or 2 clear images: the "median" is really one picture, or the average of two | the share of such pixels. `1 - empty_share - thin_share` is the share with 3 or more |
+| `clear_day_mean` | the days of the clear images (0 = the period's first day) | their average over all clear pixel-images of the chip: the date the picture mostly shows. Missing if the chip has no clear image |
+| `cs_mean` | Cloud Score+ `cs_cdf` of every image (1 = clear, 0 = cloud) | its average over all images and pixels: how clear the period was, cloudy images included. Continuous, unlike the 0.6 cut |
+| `cs_clear_mean` | the same, over the clear images only | how clean the images in the median were: 0.95 is crisp, near 0.6 means haze or thin cloud just passed the test |
+| `ndvi_mean` | (B8 − B4) / (B8 + B4) of the composite: greenness, −1 to 1 | average over the pixels with data. Forest ≈ 0.8, bare soil or water near 0 or below |
+| `bsi_mean` | ((B11 + B4) − (B8 + B2)) / ((B11 + B4) + (B8 + B2)): bare soil index | average over the pixels with data. Higher = more bare soil |
+| `cirrus_mean` | B10 (cirrus band) reflectance of the composite, 0 to 1 | average over the pixels with data. Near 0 is clean; higher means high haze left in the picture |
+
+The three last columns describe the picture itself, so they are controls and secondary
+outcomes as much as quality measures. All of these come from the one Earth Engine
+request per tile (two of them, `cs_mean` and `cs_clear_mean`, from two extra bands; the
+indices from the pixels already downloaded).
 
 Worked examples:
 
@@ -286,10 +299,12 @@ Worked examples:
 - `n_obs 7, n_clear 1.29, empty_share 0.70`. 7 images covered the chip. 70% of its
   pixels were cloudy in all 7; the other 30% had on average 1.29 / 0.30 ≈ 4.3 clear
   images each. A chip half under a cloud that never moved, half clear most of the time.
-- `n_obs 18, n_clear 12.0, empty_share 0, clear_day_mean 70` (a made-up quarter). Every pixel
-  has data, from about 12 clear images per pixel, and those images are on average from
-  day 70 of the quarter (mid March for Q1): the picture shows the end of the quarter
-  more than its start.
+- `n_obs 18, n_clear 12.0, empty_share 0, clear_day_mean 70` (a made-up quarter, Q1).
+  Every pixel has data, from about 12 clear images per pixel. The clear images were
+  taken on average on day 70, i.e. 12 March: the picture shows March more than
+  January, because January was cloudy. If the same chip's Q2 picture has
+  `clear_day_mean 20` (21 April), the two pictures are only 40 days apart, not 91, and a
+  change between them happened in those 40 days.
 
 So **`n_clear` is not a share**: 0.45 means "0.45 clear images per pixel on average",
 not "45% clear". Three useful quantities follow from the columns, with no new download:
@@ -303,8 +318,8 @@ not "45% clear". Three useful quantities follow from the columns, with no new do
 Expect `n_clear <= n_obs`, `empty_share` near 0 in the dry season, `clear_day_mean`
 between 0 and the period's length, and missing exactly where `n_clear` is 0. A
 month's `n_obs` and `n_clear` add up exactly to its quarter's (measured, `docs/findings.md`
-§1); `clear_day_mean` does not, because each period counts its days from its own start.
-Runs scored before 23 Oct have no `clear_day_mean`.
+§1); the other columns do not (averages, and each period counts its days from its own start).
+Runs scored before 23 Oct have only `n_obs`, `n_clear` and `empty_share`.
 
 #### Reading it in Python (laptop or Goethe, the same code)
 
@@ -313,7 +328,7 @@ detect's output, every period of one frequency (only the columns you need, to sa
 ```python
 import pandas as pd
 run = "tests_output/test_region_2026-10-19"          # on Goethe: "/work/<group>/<user>/runs/<run>"
-cols = ["chip_id", "confidence", "n_obs", "n_clear", "empty_share", "clear_day_mean"]
+cols = ["chip_id", "confidence", "n_clear", "empty_share", "thin_share", "clear_day_mean", "cs_mean"]
 d = pd.read_parquet(f"{run}/detect/quarterly", columns=cols)   # adds period and subregion
 d.groupby("period")[["n_clear", "empty_share", "clear_day_mean"]].describe()
 (d.confidence > 0.4).groupby(d.period).sum()          # AMW's raw detections per quarter
@@ -504,4 +519,4 @@ detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or on
 | `PLAN ERROR: … already exists` | planning the same run twice | a run is planned once; choose a new `run.name` |
 | `DETECT ERROR: … has changed since this run was planned` | the model file differs | one run uses one model; new run |
 | `quota` shows `/work` nearly full | | archive finished periods, ask the group about the quota |
-| `DETECT ERROR: … written by detect.py before clear_day_mean was added` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |
+| `DETECT ERROR: … written by detect.py before the quality columns of 23 Oct` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |

@@ -53,7 +53,9 @@ import postprocess as amw
 
 LAYERS = ("scores", "postprocess")
 VOTES = [f"vote_{i}" for i in range(1, 7)]
-QUALITY = ["n_obs", "n_clear", "empty_share", "clear_day_mean"]
+QUALITY = ["n_obs", "n_clear", "n_clear_median", "empty_share", "thin_share",
+           "clear_day_mean", "cs_mean", "cs_clear_mean", "ndvi_mean", "bsi_mean",
+           "cirrus_mean"]
 ROW_GROUP_ROWS = 200 * 529     # 200 tiles of 529 chips. build_panel.py will read an area
                                # (a chip_id range) at a time; Parquet skips the row groups
                                # outside it, because each records its smallest and largest id
@@ -184,7 +186,8 @@ def scores_layer(scores: pd.DataFrame, plan_ids: np.ndarray, tiles: pd.DataFrame
         missing = ~layer["scored"]
         layer.loc[missing, "subregion"] = (layer.loc[missing, "chip_id"] // 1000).map(where)
 
-    # Runs scored before 23 Oct have no clear_day_mean; their layer goes without it.
+    # Runs scored before 23 Oct have only the first quality columns; their layer goes
+    # without the others.
     quality = [c for c in QUALITY if c in layer.columns]
     return layer.astype({"subregion": "int8", "confidence": "float64",
                          **{c: "float32" for c in VOTES + quality}})[
