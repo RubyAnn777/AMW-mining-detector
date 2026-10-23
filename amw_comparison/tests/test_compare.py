@@ -15,7 +15,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))                            # compare.py, scene_dates.py
-sys.path.insert(1, str(HERE.parent.parent / "panel_pipeline"))  # grid.py, for real chips
+sys.path.insert(1, str(HERE.parent.parent / "panel_pipeline" / "lib"))  # grid.py, for real chips
 
 import compare  # noqa: E402
 

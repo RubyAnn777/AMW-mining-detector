@@ -16,6 +16,7 @@ import argparse
 import json
 import math
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import shapely
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))   # our helpers: config, periods, grid, ...
 
 from config import DEFAULT_CONFIG, Config, describe, load_config
 from grid import CHIP_PX, chip_table, read_shape, tiles_for

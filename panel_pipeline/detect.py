@@ -62,6 +62,8 @@ import tensorflow as tf
 import yaml
 from descarteslabs.geo import DLTile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))   # our helpers: config, periods, grid, ...
+
 from config import Config, load_config
 from grid import CHIP_PX, chip_ids
 from lock import FolderLock, Locked

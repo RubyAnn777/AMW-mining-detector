@@ -12,7 +12,7 @@ import yaml
 
 from periods import FREQUENCIES, Period, period_range
 
-PIPELINE_DIR = Path(__file__).resolve().parent     # .../panel_pipeline
+PIPELINE_DIR = Path(__file__).resolve().parent.parent   # .../panel_pipeline (this file is in lib/)
 REPO = PIPELINE_DIR.parent                         # the repository root
 DEFAULT_CONFIG = PIPELINE_DIR / "config.yaml"
 

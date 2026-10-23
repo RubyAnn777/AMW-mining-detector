@@ -8,11 +8,12 @@ The same four commands run everywhere. Part A says what they do and what every o
 means, using a laptop as the example. Part B says only what is *different* on Goethe.
 
 ```
-config  ──►  plan.py  ──►  detect.py (many times)  ──►  status.py  ──►  assemble (next)
+config  ──►  plan.py  ──►  detect.py (many times)  ──►  status.py  ──►  assemble_period.py
  yaml        once per run   one task = one (frequency, period, subregion)   any time
 ```
 
 Contents
+- [Folder layout](#folder-layout)
 - [0. Vocabulary](#0-vocabulary)
 - [Part A: on a laptop](#part-a-on-a-laptop)
   - [A1. Environment](#a1-environment)
@@ -32,11 +33,43 @@ Contents
 
 ---
 
+## Folder layout
+
+```
+panel_pipeline/
+  README.md               this file
+  config.yaml             the settings template; copy it to configs/<run>.yaml per run
+  plan.py                 step 1, once per run
+  detect.py               step 2, the scoring, one task at a time
+  status.py               any time: how far a run has got, and the commands still to run
+  assemble_period.py      step 3, one period across subregions, plus AMW's postprocess flags
+  lib/                    imported by the steps, never run on their own
+    config.py periods.py grid.py lock.py provenance.py read_panel.py
+                          (exception: `python panel_pipeline/lib/config.py` checks a config)
+  checks/                 looking at results and measuring speed; nothing here writes a run
+    explore_runs.ipynb  bench_scoring.py  bench_download.py
+  docs/
+    open_design_decisions.Rmd   decided principles and open design decisions
+    history/                    older notes, kept for the record
+
+amw_comparison/   our scores against AMW's published ones (own README)
+cluster/          Goethe job scripts (Part B)
+configs/          one committed config per run
+requirements/     pinned packages, one list per platform (A1)
+core/ scripts/ utils/ docs/   AMW's own code and documents, unchanged; we import four files from core/
+```
+
+The steps put `lib/` on Python's search path themselves (one `sys.path.insert` line near
+their imports), so every command stays `python panel_pipeline/<step>.py ...` from the
+repository root.
+
+---
+
 ## 0. Vocabulary
 
 | Word | Meaning here |
 |---|---|
-| **run** | One `plan.py` result: one folder with one frozen config, one chip list, one model. The whole Amazon is one run; the cluster works *inside* a run. "One run at a time" is a decided principle (`open_design_decisions.Rmd`, P4). |
+| **run** | One `plan.py` result: one folder with one frozen config, one chip list, one model. The whole Amazon is one run; the cluster works *inside* a run. "One run at a time" is a decided principle (`docs/open_design_decisions.Rmd`, P4). |
 | **period** | One month (`2024-07`) or one quarter (`2024Q3`). A period runs from its first day to the first day of the next period, which Earth Engine excludes, so every day is imaged. |
 | **frequency** | `monthly` or `quarterly`. The two never mix: separate folders, separate panels. |
 | **subregion** | One of AMW's six pieces of Amazon_ACA (`data/boundaries/Amazon_ACA/Amazon_ACA_{n}.geojson`). |
@@ -77,7 +110,7 @@ One YAML file holds every setting of a run. `panel_pipeline/config.yaml` is the
 template; a real run gets its own copy under `configs/` (committed, so the run is
 documented), for example `configs/test_region_2026-10-19.yaml`.
 
-`python panel_pipeline/config.py --config configs/<file>.yaml` checks the file and
+`python panel_pipeline/lib/config.py --config configs/<file>.yaml` checks the file and
 prints a summary. It refuses typos, missing keys, keys written twice, wrong types and
 impossible values, with a message saying which.
 
@@ -232,17 +265,17 @@ d.groupby("period")["confidence"].describe()
 ```
 
 Expect `n_clear <= n_obs`, `confidence` in 0..1, `empty_share` near 0 in the dry season.
-`panel_pipeline/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
+`panel_pipeline/checks/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
 Reading a whole period of the full Amazon this way needs ~18 GB of memory; read one
 `period=` folder, or a few columns, on a laptop.
 
 ### A7. Assembly (next step)
 
-`assemble_period.py` (draft in the project notes, being typed) takes one (frequency,
+`assemble_period.py` (first version, tested on the two small test runs) takes one (frequency,
 period), refuses unless every subregion's task is complete, and writes one file per
 period with every planned chip: AMW's detection flags, the isolation distance, and
 `scored = False` rows for failed tiles. Nothing is ever deleted (Rmd P1, P2, D11).
-What is decided and what is open is in `open_design_decisions.Rmd`.
+What is decided and what is open is in `docs/open_design_decisions.Rmd`.
 
 ---
 
@@ -293,7 +326,7 @@ The full click-by-click version is in the "Cluster migration" thread. In short:
 ```bash
 source cluster/goethe_env.sh                                   # venv, key, thread limits
 cp panel_pipeline/config.yaml configs/<run>.yaml               # then edit: name, output_root, clip_to
-python panel_pipeline/config.py --config configs/<run>.yaml
+python panel_pipeline/lib/config.py --config configs/<run>.yaml
 
 # plan: seconds for a test area; 2-3 h for all of Amazon_ACA, so inside a job, not on the login node
 salloc --partition=general1 --nodes=1 --time=4:00:00 --mem=0   # interactive job (test: --partition=test --time=1:55:00)
@@ -333,10 +366,10 @@ project, whoever and wherever the requests come from
 - **100,000 EECU-hours per month** on the Partner tier. Not a hard cut-off: over it, the
   project runs in "restricted mode" (slower) until the 1st of the next month.
 
-Measured on 22 Oct (`bench_download.py`, subregion 3, 2026Q3): one tile-quarter costs
+Measured on 22 Oct (`checks/bench_download.py`, subregion 3, 2026Q3): one tile-quarter costs
 Earth Engine about **130 EECU-seconds** (56–213) and ~35 s per request on its own;
 18.6 MB of pixels. A month is cheaper (fewer images in the median) but not measured yet:
-`python panel_pipeline/bench_download.py --period 2026-07 --tiles 5`.
+`python panel_pipeline/checks/bench_download.py --period 2026-07 --tiles 5`.
 
 So, per day, with 40 requests in flight at ~35–60 s each: **about 60,000–100,000
 tile-periods**, and the monthly EECU quota allows about 90,000 tile-quarters a day.

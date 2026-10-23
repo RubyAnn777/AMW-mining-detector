@@ -1,7 +1,7 @@
 """Time the scoring of a few kept tiles, with and without AMW's macOS TensorFlow setting.
 
-    python panel_pipeline/bench_scoring.py
-    python panel_pipeline/bench_scoring.py --tiles 4 --dates 2026-07-01_2026-10-01
+    python panel_pipeline/checks/bench_scoring.py
+    python panel_pipeline/checks/bench_scoring.py --tiles 4 --dates 2026-07-01_2026-10-01
 
 Scores the same tiles three ways, each in a fresh Python (the setting can't be undone
 inside one):
@@ -31,6 +31,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))   # our helpers: config, periods, ...
 
 from config import REPO, load_config
 

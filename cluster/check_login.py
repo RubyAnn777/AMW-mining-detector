@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "panel_pipeline"))   # config.py, grid.py (adds core/)
+sys.path.insert(0, str(HERE.parent / "panel_pipeline" / "lib"))   # config.py, grid.py (adds core/)
 
 from config import DEFAULT_CONFIG, load_config   # noqa: E402
 import grid                                       # noqa: E402,F401  (puts AMW's core/ on the path)
