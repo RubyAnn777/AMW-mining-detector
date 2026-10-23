@@ -3,6 +3,8 @@
 
 Fork of [earthrise-media/mining-detector](https://github.com/earthrise-media/mining-detector) (Amazon Mining Watch, AMW).
 
+**Our pipeline lives in `panel_pipeline/`.** How to run it on a laptop and on the Goethe cluster: [`panel_pipeline/README.md`](panel_pipeline/README.md). The rest of this file describes the fork's layout and the earlier `timeseries/` pilot, which the panel pipeline does not use.
+
 **Project goal:** build a more granular (monthly/quarterly) time series of artisanal gold mining, piloted on the La Pampa corridor in Madre de Dios, Peru, then scale up.
 
 **Model in use:** `models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5` — upstream's CNN ensemble (six member CNNs: v4.10b, 18d, 20g, 21a, 22b, 22c; the member `.h5` files are in `_archive/models/`, NOT in `models/`). Operating-threshold configs ship alongside (`_config-t0.4.txt`, `_config-t0.43.txt`). It runs directly on Sentinel-2 chips (`embedding_strategy='none'`) — **no SSL4EO backbone download is required**. The earlier SSL4EO+MLP path (phase 1) is archived.

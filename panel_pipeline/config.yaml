@@ -2,8 +2,8 @@
 # parallelisation down the line
 
 run:
-  name: "pilot"                     # label for this run's folder
-  output_root: "test_region"          # cluster scratch - where the output file is written
+  name: "test_region_example"       # label for this run's folder; per run: <area>_<YYYY-MM-DD>
+  output_root: "tests_output"       # local test runs (git-ignored); on Goethe a /work path
 
 earth_engine:  # DEVIATION from AMW: AMW reads the project from the EE_PROJECT environment
                # variable, else uses its own "earthindex" (gee.py:34). We set it here.

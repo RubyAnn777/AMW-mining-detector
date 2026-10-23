@@ -28,24 +28,33 @@ AMW detections centred in subregion 3 (Q1 / Q2 / Q3 2026) land on one of our pla
 AMW's 16 October correction of a grid misalignment in subregion 3 concerns its 2025 annual
 detections only (their public README); the quarterly files line up, as this check shows.
 
-## Results so far: test_region (36 tiles in subregion 2)
+## Results
+
+**Subregion 3, 2026Q3** (all 34,825 tiles, scored 20 to 22 October; `compare.ipynb` set to this run):
+
+| ours | AMW | both | only ours | only AMW | overlap | scores identical | median gap | largest gap |
+|---|---|---|---|---|---|---|---|---|
+| 25,841 | 25,671 | 25,440 | 401 | 231 | 0.976 | 34% | 0.0013 | 0.23 |
+
+- Every AMW detection in subregion 3 lands on one of our chips (0 "should have matched").
+- 583 of the 632 disagreements have our score between 0.35 and 0.45.
+- The differences are in two areas (around 55°W 4.5°N and 46°W 3°S); elsewhere the scores are
+  identical. That fits the last day: 30 Sep is in our quarter and not in AMW's, and only the
+  areas a clear 30 Sep scene covered change.
+- No disagreements on the 462 border tiles.
+
+**Why quarters differ: the last day** (settled, see `referee_audit.md` and
+`last_day_check.ipynb`). AMW's quarter ends a day earlier (31 Mar, 30 Jun, 30 Sep are dropped).
+Rerunning AMW's own code on Pará 2026Q1 with our end date reproduces our scores exactly, and with
+AMW's end date reproduces AMW's published file exactly. We keep the last day.
+
+**test_region** (36 tiles in subregion 2), for reference:
 
 | quarter | ours | AMW | both | only ours | only AMW | scores identical |
 |---|---|---|---|---|---|---|
 | 2026Q1 | 84 | 84 | 84 | 0 | 0 | 100% |
 | 2026Q2 | 105 | 105 | 105 | 0 | 0 | 100% |
 | 2026Q3 | 146 | 148 | 145 | 1 | 3 | 0% (median gap 0.008, largest 0.074) |
-
-- **Q1 and Q2 are reproduced exactly**: the same chips, and the same scores and six votes to
-  about 1e-7 (rounding in the model's arithmetic).
-- **Q3 differs slightly everywhere**: every tile, all six votes. That means the median was made
-  of different images, not that the code differs. The 4 disagreements all have scores between
-  0.35 and 0.45. Two possible causes:
-  1. **30 September.** Our quarter ends on 1 Oct, excluded, so 30 Sep is in. AMW's ends on
-     30 Sep, excluded (handoff §4). On Q1 and Q2 the last day added nothing here; in Q3 it may.
-  2. **Scenes Earth Engine added after AMW scored Q3.** AMW ran Q3 on 2 to 3 October
-     (upstream `docs/design/pipeline.md`), our test_region run was on 19 October.
-  `scene_dates.py` (step 3) tells them apart.
 
 Upstream, checked 19 October (earthrise-media/mining-detector at `7bde733`): AMW's code that
 scores a quarter (`core/gee.py`, `inference_engine.py`, `inference_pipeline.py`, `tile_utils.py`,
@@ -94,12 +103,11 @@ day's scenes on the map.
 ```bash
 python panel_pipeline/plan.py --config configs/amw_compare_s3_2026-10-19.yaml
 caffeinate -i python panel_pipeline/detect.py --run tests_output/amw_compare_s3_2026-10-19 \
-    --frequency quarterly --subregion 3 --from 2026Q2 --to 2026Q2 --workers 3 --batch-tiles 100
+    --frequency quarterly --subregion 3 --from 2026Q3 --to 2026Q3 --workers 3 --batch-tiles 100
 ```
 
 - Why subregion 3: the smallest (34,825 tiles, 18.4 M chips), no Andes, 462 border tiles.
-- Why 2026Q2: it reproduced exactly on test_region, so any difference at scale is a real
-  finding. Q3 can be added to the same run later (`--from 2026Q3 --to 2026Q3`).
+- The run that was done is 2026Q3. Another quarter goes into the same run with `--from`/`--to`.
 - `plan.py` takes about 15 minutes and writes about 160 MB.
 - `caffeinate -i` keeps the Mac awake while the command runs (plugged in, lid open).
 - `--workers 3` is the low setting; `--batch-tiles 100` saves every 100 tiles, so a stop
@@ -111,6 +119,4 @@ about 3 to 4 seconds per tile. At that pace subregion 3 takes about 30 to 36 hou
 workers up to twice that if Earth Engine is the bottleneck, so plan for **1.5 to 3 days**. The
 log prints the minutes for each 100-tile batch; minutes per batch × 349 batches is the total.
 
-**5. Compare.** In the notebook set `RUN = "tests_output/amw_compare_s3_2026-10-19"`,
-`SUBREGION = 3`, Run All. At that size it takes about 2 minutes and 5 to 6 GB of memory (tested
-on a synthetic run of the same size).
+**5. Compare.** Open `compare.ipynb`, point it at this run and 2026Q3, and Run All. It takes about 2 minutes and 5 to 6 GB of memory.

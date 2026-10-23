@@ -64,3 +64,7 @@ tests_output/
 test_region_small_19.10.2026/
 # AMW's published files for the comparison (downloaded, about 200 MB): amw_comparison/README.md
 amw_comparison/data/
+
+# Earth Engine service-account keys: never in git
+.secrets/
+deforestation-and-mining-*.json

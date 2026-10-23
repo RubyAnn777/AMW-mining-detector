@@ -1,0 +1,258 @@
+---
+title: "Panel pipeline: principles and open design decisions"
+date: "2026-10-21"
+output:
+  html_document:
+    toc: true
+---
+
+This file lists what is **decided** about how the chip panel is assembled, and what is still
+**open**. Every open item says what the MVP does in the meantime, so the code can be built and
+the decision taken later without rebuilding anything. Numbers marked *measured* come from the
+test runs `test_region_2026-10-19` (subregion 2, zone 20) and `test_region_para_2026-10-19`
+(subregion 4, zone 21). Reasoning in more depth: `code/panel_assembly_strategy.md`.
+
+# Decided principles
+
+| # | Principle | Consequence |
+|---|---|---|
+| P1 | **The panel is complete.** Every planned chip has a row in every period. Nothing is deleted or filtered out. | A chip whose tile failed keeps its row, with `scored = FALSE` and missing scores. "No data" is never "no mine". |
+| P2 | **The panel is additive.** Later steps only add variables, flags and statistics. They never change or remove what is already there. | Persistence, isolation, SAM2 and any better rule later are extra columns (flags), not filters. |
+| P3 | **Monthly and quarterly are separate panels** with the same `chip_id`. | Separate folders. The monthly panel can be joined to its quarter in one line through the quarter tag. |
+| P4 | **One run at a time.** A run is one `plan.py` result: one chip list, one frozen config, one model. | The cluster parallelises *inside* a run, by period and subregion. Assembly reads all of a run's task folders. |
+| P5 | **Two assembly scripts, split by axis.** `assemble_period.py` works on one period across space; `build_panel.py` works on one area across time. | Neither ever needs the whole panel in memory. |
+| P6 | **pandas and pyarrow** for now. | DuckDB is an open choice in the cluster migration notes (D10). |
+
+# Open design decisions
+
+| # | Topic | MVP does |
+|---|---|---|
+| D1 | Isolation rule depends on cloud cover | AMW's flags, plus the distance and `n_clear` stored |
+| D2 | Chips near the edge of the scored area look isolated | Nothing yet |
+| D3 | How distances are measured | Both measures stored; flags use AMW's |
+| D4 | One mine fires a blob of overlapping chips | Nothing yet |
+| D5 | UTM zone seams are scored twice | Both copies kept |
+| D6 | Unit of analysis: chips or 240 m cells | Chip panel only; 240 m cells proposed |
+| D7 | Border tiles listed in two subregions | Refuses the period, with a message |
+| D8 | Persistence rule | Not built yet; will be a flag |
+| D9 | Last day of each period | Our convention (last day included) |
+| D10 | DuckDB or pandas/pyarrow | pandas/pyarrow |
+| D11 | Storage when nothing is deleted | Keep everything |
+| D12 | Combining several runs | Not supported |
+| D13 | How added variables are stored | One file per layer and period, identical rows |
+
+## D1. The isolation rule depends on cloud cover
+
+AMW's dual threshold makes a chip with confidence ≥ `t_main` that is *isolated* (its 5th nearest
+detected neighbour is more than 3 km away) also clear the stricter `t_iso`. Fewer clear images
+mean fewer detections, so fewer neighbours, so more isolated chips.
+
+*Measured*, Pará run: in 2026Q1 (mean `n_clear` 4.9) **27 of 51** catalogue chips are isolated;
+in 2026Q2 (`n_clear` 19.5) **1 of 701**. So `det_loose` partly measures weather.
+
+**MVP:** AMW's flags, and the 5th-neighbour distance and the image counts in every row, so a
+better rule can be derived later from the stored columns.
+
+## D2. Edges look isolated
+
+A chip near the edge of the scored area has neighbours on one side only. *Measured:* in the test
+region 2026Q1, 4 of the 14 isolated chips are within 3 km of the test area's edge. In the full run
+this only happens at Amazon_ACA's outer border; in every test run it happens everywhere.
+
+**Options:** a `near_edge` flag; ignore it; drop the rule at the border. **MVP:** nothing yet, and
+isolation statistics from test runs are not representative.
+
+## D3. How distances are measured
+
+AMW measures the 3 km in one UTM zone: `postprocess.centroids_xy_m` calls geopandas'
+`estimate_utm_crs()`, which picks the single zone at the centre of the data's bounding box. AMW
+runs it on the whole basin per period, which gives zone 20S for all of Amazon_ACA (79.6°W to
+43.7°W, seven zones). UTM stretches distances away from the zone's central meridian (63°W).
+
+*Measured* with pyproj, a true 3 km reads as:
+
+| Longitude | 80°W | 75°W | 70°W | 63°W | 55°W | 50°W | 45°W |
+|---|---|---|---|---|---|---|---|
+| AMW's distance | 3.135 km | 3.066 | 3.021 | 2.999 | 3.028 | 3.078 | 3.153 |
+
+So at the western and eastern ends a chip is called isolated about 4–5% too early. Madre de Dios
+(~70°W) is off by ~0.7%, the Tapajós (~56°W) by ~2–3%, Ecuador and Colombia (~77°W) by ~4%.
+
+**Why AMW doesn't correct it (what the code and history show):**
+
+- The rule was "codified from the notebook workflow" in commit `5d11b6b` (2 Jun 2026), written
+  with an AI coding assistant. Nothing in their code, docs or published config discusses the
+  projection; their public config lists only `k = 5` and `isolation_km = 3.0`.
+- Their evaluation notebook (`fd1231e`) says they project everything into "one shared metric CRS
+  (from the catalog), so distances stay meaningful across geographic splits". So they cared that
+  all chips use the *same* measure, not that the measure is *accurate*.
+- They tuned only `t_iso` (a sweep against known mining and non-mining regions); `k = 5` and 3 km
+  were fixed. The rule is described as "a simple spatial prior" on their blog. A heuristic with an
+  untuned 3 km cut-off makes a 5% error look unimportant.
+- They know great-circle (haversine) distances: they use them elsewhere (commit `99f944a`).
+
+Our reading: not a deliberate choice, rather a convenient default whose error nobody measured.
+
+**Options:** (a) AMW exactly, comparable with their product; (b) great-circle distances, correct
+everywhere; (c) store both. Note that on a small test run (a)'s zone is the run's own zone, so
+(a) only differs from (b) on the full run. **MVP:** (c), with the flags computed from (a).
+
+## D4. One mine fires a blob of chips
+
+Chips overlap four times (24 px stride), so one scar lights up a 2×2 or larger block, and a chip's
+5th "neighbour" is often part of the same scar. *Measured:* 31–61% of catalogue chips have their
+5th neighbour less than 0.5 km away. The rule then mostly measures blob size, not whether mines
+cluster. **MVP:** AMW's rule as it is.
+
+## D5. UTM zone seams are scored twice
+
+Each zone's tile grid runs ~4.5 km past the zone line, so a ~9 km strip at every seam enters the
+panel twice, on two unrelated grids, with different keys and different centres. Neither our
+chip_id dedupe nor AMW's centroid dedupe catches it. *Measured* at 66°W, 11–12°S: 183
+cross-zone tile pairs overlap, median 3.3%, max 81% of a tile. Amazon_ACA spans 7 zones (17–23).
+
+**Proposed rule:** keep a cell (or chip) only if its centre lies inside its own zone's 6° band.
+**MVP:** both copies kept. Whatever rule is chosen becomes a column of the chip table, so no
+assembly code has to change.
+
+## D6. Unit of analysis: overlapping chips or non-overlapping cells
+
+*Measured* 19 Oct from the code (`core/tile_utils.py`, `core/gee.py`, `lib/grid.py`), not from
+comments, with `checks/overlap/overlap.py` and `tiles.py` (areas in EPSG:6933, equal-area). Ruby,
+23 Oct: the analysis level is not known yet (municipality, a border buffer, ...); the aim is to
+measure how mining **grows**, so the panel needs counts or areas at a fine spatial level.
+
+**How the geometry is built.**
+
+1. `DLTile.iter_from_shape(region, tilesize=552, pad=12, resolution=10)` lays UTM squares on a
+   fixed grid, one per UTM zone. Tile key = `552:12:10.0:zone:ti:tj`.
+2. `get_tile_data` (gee.py) does not download the UTM square. It takes the lon/lat bounding box
+   of the reprojected, slightly tilted square and asks for 576 × 576 pixels filling it. So every
+   tile has its own lat/lon pixel grid, slightly bigger than the square.
+3. `cut_chips` slides a 48 px window in 24 px steps: 23 × 23 = 529 chips, column-major. Chip
+   polygons are interpolated from the same box, so the polygon in `chips.parquet` is exactly the
+   footprint the model saw.
+
+**What overlaps** (*measured*):
+
+| Level | Overlap? | Kind | Size |
+|---|---|---|---|
+| Subregions 1–6 | no | | largest pairwise intersection 0.0 |
+| Tiles on subregion borders | same tile twice | side effect (6 separate jobs) | 1,186 of 274,932 tiles (0.43%), 1 tile three times; same key, so dedupe on chip_id is exact (D7) |
+| Neighbouring tiles, padding | yes | by design (`pad: 12`) | a 24 px shared strip, median 4.2% of a tile per pair; tiling covers its area 1.093 times (Madre de Dios) |
+| Neighbouring tiles, projection | yes | side effect (lat/lon box of a tilted square) | even with pad 0: median 0.35%, max 0.70% per pair |
+| UTM zone seams | yes, large | side effect | D5 |
+| Chips inside a tile | ×4 | by design (stride 24) | chip area / union = 3.99 (La Pampa), 4.01 (Madre de Dios) |
+| "Every other chip" | almost disjoint | side effect (projection) | 0 inside a tile; across tile edges 29–31% of the subset overlaps a neighbour by up to 7.5% of a chip; ~0.7% of area counted twice. So the 8 Oct claim of an "exact 480 m grid" is wrong, and it would discard 75% of the scores |
+
+Chip area is 231,666–233,666 m², not 230,400, because the pixels sit on a lat/lon grid.
+
+**Why the overlaps by design exist.** The 24 px stride means anything up to 240 m across fits
+whole inside at least one chip; without it a mine on a chip edge is cut in two and each half may
+be too small to detect. The padding makes the chips of neighbouring tiles continue one seamless
+24 px lattice (chip offsets run `24 × (23·ti + j) − 12` across tile edges). The projection
+slivers and the zone seams have no purpose; both can be removed by a rule.
+
+**Why it matters for growth.** A chip is 2 × 2 blocks of 240 m. A mine covering k × k blocks
+touches (k+1)² = k² + 2k + 1 chips: area plus perimeter plus one. A mine growing from 1 to
+2 × 2 blocks grows ×4 in area but from 4 to 9 chips, ×2.25. Chip counts understate the growth
+of expanding mines and overstate the size of small ones: a bias with a known sign, not noise.
+(In practice the detector won't fire on every touching chip, but the structure stays.)
+
+**The proposal: a 240 m cell lattice for analysis, chips stay the measurement.** The stride
+lattice already partitions space. Cut each padded tile into 24 × 24 blocks of 24 px; block 23 of
+tile i is the same ground as block 0 of tile i+1 (the padding), so keep blocks 1–23: 529 cells
+per tile, one per chip, an exact partition in UTM within a zone. Each interior cell lies under
+exactly 4 chip windows (two may belong to the neighbouring tile). The cell's value is a function
+of those 4 scores (mean, max, any above the threshold), or of the SAM2 mask pixels inside it,
+which then sum correctly because no pixel is counted twice. Each cell has one centre, so it
+belongs to exactly one municipality or buffer and aggregates up exactly. Zone seams: D5's rule.
+
+**Objections.** It doesn't remove spatial dependence, it gives it a known form: neighbouring
+cells share 2 of their 4 chips, so a cell outcome is a 2 × 2 moving average by construction.
+Standard errors must still be clustered (tile) or Conley. If the regressors vary at municipality
+level, the effective N is the number of municipalities, not billions of rows. And growth rates
+will differ by aggregation level (the modifiable areal unit problem); that is chosen with the
+research question.
+
+**Still to answer:** the main regressors and their spatial level; the exact SAM2 idea; whether
+the outcome is the score, a 0/1 detection or mined area.
+
+**MVP:** the chip panel, every score kept. A cell layer would be a later, separate step built
+from the stored chip scores, with no new Earth Engine requests.
+
+## D7. Border tiles
+
+A tile on a subregion border is listed under both subregions and scored twice, under the same
+`chip_id`. AMW keeps the copy with the higher confidence. Under P1 we could instead keep both with a
+flag. **MVP:** none of the test runs has border tiles; `assemble_period.py` refuses a period
+in which a chip was scored twice, with a message naming this decision. To be built once a run
+with border tiles exists.
+
+## D8. Persistence rule
+
+Calendar version (a detection in year Y and again in Y+1, closest to AMW), rolling version (2
+detections within 12 months), or adding annual composites (~6% more Earth Engine requests, copies
+AMW exactly). Whatever is chosen is a flag (P2). Needs more than one year of data to test.
+
+## D9. Last day of each period
+
+Our periods end on the 1st of the next period, which Earth Engine excludes, so every day is in.
+AMW passes the period's last day as the (excluded) end, so 31 Mar, 30 Jun, 30 Sep and 31 Dec are
+never imaged. *Measured* (`amw_comparison/last_day_check.ipynb`), Pará 2026Q1: 56 detections ours
+against 27 AMW's, and the whole gap is 31 March. AMW's own code reproduces both results exactly
+with the two end dates.
+
+**For ours:** whole calendar periods, and three months add up exactly to their quarter
+(`n_obs`, `n_clear`; *measured* exact on 57,132 chip-quarters). **For AMW's:** direct
+comparability with their published product. **MVP:** ours.
+
+## D10. DuckDB or pandas/pyarrow
+
+DuckDB reads Parquet, sorts and joins bigger-than-memory tables, and computes per-chip time
+variables in SQL. pandas/pyarrow is what we know. Moved to the cluster migration notes.
+**MVP:** pandas/pyarrow.
+
+## D11. Storage when nothing is deleted
+
+The earlier plan deleted detect's part files once a period was assembled. With nothing deleted,
+the part files (~0.8 TB *estimate*) stay next to the assembled panel (about the same again, plus
+the added layers). Goethe's `/work` has a 5 TB *group* quota and no backup. **Options:** keep
+everything on `/work`; move part files to the archive after checks; delete them after a verified
+copy. **MVP:** keep everything.
+
+## D12. Combining several runs
+
+Not needed if the whole region is one run (P4). If it ever is (for example, a later extension),
+assembly would need the runs' frozen scoring settings and model fingerprints to be identical.
+**MVP:** not supported.
+
+## D13. How added variables are stored
+
+Rewriting a ~1 TB panel to add one column is slow and risky. Proposed: each step writes its own
+**layer**: one file per period, with exactly the same rows in the same order (every planned chip,
+sorted by `chip_id`). Adding a variable means adding a layer and never touching an existing one;
+reading puts the layers side by side. Time-invariant chip attributes (tile, `in_andes`, square)
+stay once in `plan/chips.parquet`, not repeated in every period. **MVP:** two layers,
+`scores` (detect's values) and `postprocess` (AMW's flags and distances).
+
+# Leftovers from earlier reviews
+
+Added 23 Oct 2026 so that no open item lives only in an archived note. The letters are the
+item numbers of the 19 Oct review (`history/quarterly_and_parallel_runs.md` §6) and of the
+Goethe plan (`cluster/cluster_plan_goethe.md`); the reasoning is there.
+
+| # | Topic | Now | Proposal |
+|---|---|---|---|
+| L1 (R2, R5) | **Earth Engine compute budget and the scope of periods** | At ~130 EECU-s per tile-quarter and 40 requests in flight, about 90k tile-periods a day: the full plan (38.5 M) takes ~14 months | Look up the project's real quota (Cloud console, Earth Engine quotas); measure a monthly period's EECU cost with `checks/bench_download.py`; then choose the scope (e.g. quarterly first) or ask Google for more concurrency |
+| L2 | Service-account login on Goethe | `lib/config.py` accepts only `earth_engine: project` | Add the `credentials:` key (`cluster/service_account_guide.md` Part C) |
+| L3 (C1) | Earth Engine adds scenes late | Each session records when it ran | Re-score the last quarter before the final panel |
+| L4 (D4) | Quarterly first? | Order is monthly, then quarterly (Ruby, 8 Oct) | Quarterly is a third of the requests and less cloudy; with L1 binding, a complete quarterly panel first may be worth more |
+| L5 (D5) | GPU for scoring | CPU only | Not needed while Earth Engine is the limit (R2); one test job if that changes |
+| L6 (C5) | A task longer than the job time limit | Resubmitting resumes it | Fine as is; tile shards only if it becomes a nuisance |
+| L7 (A1) | `--run` is resolved from the current folder, config paths from the repository root | Run every command from the repository root | Resolve a relative `--run` from the repository root |
+| L8 (A5) | Hive partition columns come back as text | `lib/read_panel.py` and the notebook set the types | Keep doing so in every reader |
+| L9 (A6) | A moved run folder keeps its old `output_root` in the frozen config | Harmless | Check the folder name against `run.name` |
+| L10 (B2) | No dry run | | `--dry-run`: print periods, tiles, folders and their state, stop before the Earth Engine login |
+| L11 (B3) | `--from 2026-01` with quarterly is refused | Refused | Say "did you mean 2026Q1?" |
+| L12 (B5) | A cloud-wrecked period looks complete | | Print the period's mean `n_clear` and `empty_share` in its closing log line |

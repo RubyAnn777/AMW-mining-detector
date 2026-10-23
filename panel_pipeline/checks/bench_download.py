@@ -1,7 +1,7 @@
 """Measure what one tile costs Earth Engine, and whether a cheaper recipe gives the same pixels.
 
-    python panel_pipeline/bench_download.py
-    python panel_pipeline/bench_download.py --tiles 3 --period 2026Q3 --start 30000
+    python panel_pipeline/checks/bench_download.py
+    python panel_pipeline/checks/bench_download.py --tiles 3 --period 2026Q3 --start 30000
 
 Downloads a few tiles of a planned run three ways, one request at a time, and asks Earth
 Engine for each request's compute profile (ee.data.profiling: the work its servers did,
@@ -22,6 +22,7 @@ needs grows with it. Sends 3 x --tiles requests to the run's Earth Engine projec
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -29,6 +30,9 @@ import ee
 import numpy as np
 import pandas as pd
 from descarteslabs.geo import DLTile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))          # detect.py
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))   # our helpers: config, periods, ...
 
 import detect
 from config import load_config

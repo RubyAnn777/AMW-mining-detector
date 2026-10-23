@@ -25,8 +25,8 @@ import pandas as pd
 
 from compare import REPO, frozen_config, read_chips
 
-sys.path.insert(0, str(REPO / "panel_pipeline"))
-from periods import Period  # noqa: E402  (ours: panel_pipeline/periods.py)
+sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
+from periods import Period  # noqa: E402  (ours: panel_pipeline/lib/periods.py)
 import gee  # noqa: E402  (AMW's Earth Engine login; compare.py put core/ on the path)
 
 S2 = "COPERNICUS/S2_HARMONIZED"                              # gee.py:201
