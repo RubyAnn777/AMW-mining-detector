@@ -10,7 +10,8 @@ Run after plan.py, once per frequency and subregion:
     ... --image-cache tests_output/image_cache     tests only: keep the downloaded images
 
 Writes <run>/detect/<frequency>/period=<period>/subregion=<n>/
-    part_00001.parquet, ...   one row per chip: chip_id, confidence, six votes, image counts;
+    part_00001.parquet, ...   one row per chip: chip_id, confidence, six votes, image counts,
+                              the clear images' average day;
                               a new part every --batch-tiles tiles or --flush-minutes,
                               whichever comes first. Once the period is complete, they
                               are merged into part_00000.parquet
@@ -76,13 +77,32 @@ from tf_darwin import apply_darwin_tf_compat
 from tile_utils import cut_chips
 
 SPECTRAL = list(gee.DataConfig._BAND_IDS["S2L1C"])   # AMW's 13 bands, model's order (gee.py:134)
-COUNTS = ["n_obs", "n_clear"]                         # ADDITION: see PanelExtractor
+EXTRA = ["n_obs", "n_clear", "clear_day_sum"]         # ADDITION: see quality_bands
 
 
 # ------------------------------------------------------------ imagery
 
+def quality_bands(s2, start_date: str, clear_threshold: float):
+    """Three bands per pixel, from the Sentinel-2 images `s2` of the period."""
+    # ADDITION: the images AMW's recipe could use (n_obs: those with a cloud score, cloudy
+    # or clear), those passing its cloud test (n_clear: what the median is made of), and
+    # the sum of the clear images' days (clear_day_sum: day 0 is the period's first day;
+    # divided by n_clear it is their average day). Same collections, dates and test as
+    # gee.py:208-229. A pixel with no clear image is masked, and arrives as 0 in all three
+    # bands except n_obs.
+    start = ee.Date(start_date)
+    scores = s2.linkCollection(ee.ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED"),
+                               ["cs_cdf"]).select("cs_cdf")
+    clear = scores.map(lambda img: img.updateMask(img.gte(clear_threshold)))
+    days = scores.map(lambda img: ee.Image.constant(img.date().difference(start, "day").floor())
+                      .toFloat().updateMask(img.gte(clear_threshold)))
+    return (scores.count().rename("n_obs").toUint16()
+            .addBands(clear.count().rename("n_clear").toUint16())
+            .addBands(days.sum().rename("clear_day_sum").toFloat()))
+
+
 class PanelExtractor(gee.GEE_Data_Extractor):
-    """AMW's Earth Engine downloader, plus two bands that count images per pixel."""
+    """AMW's Earth Engine downloader, plus three bands that describe the images per pixel."""
 
     def _build_composite(self, start_date, end_date):
         # ADDITION: sent as 32-bit numbers. AMW's median arrives as 64-bit numbers (8 bytes
@@ -90,17 +110,8 @@ class PanelExtractor(gee.GEE_Data_Extractor):
         # (gee.py:378, and score_tile scores 32-bit numbers), so cutting it on Earth
         # Engine's side instead gives the same values in half the download.
         composite = super()._build_composite(start_date, end_date).toFloat()   # AMW's median
-        # ADDITION: per pixel, the images AMW's recipe could use (n_obs: those with a
-        # cloud score, cloudy or clear) and those passing its cloud test (n_clear: what
-        # the median is made of). Same collections, dates and test as gee.py:208-229.
-        scores = (ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
-                  .filterDate(start_date, end_date)
-                  .linkCollection(ee.ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED"),
-                                  ["cs_cdf"])
-                  .select("cs_cdf"))
-        clear = scores.map(lambda img: img.updateMask(img.gte(self.config.clear_threshold)))
-        return (composite.addBands(scores.count().rename("n_obs").toUint16())
-                         .addBands(clear.count().rename("n_clear").toUint16()))
+        s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterDate(start_date, end_date)
+        return composite.addBands(quality_bands(s2, start_date, self.config.clear_threshold))
 
     def save_tile(self, pixels, tile, outdir, product_type="image"):
         """AMW's cache writer, made all or nothing (used only with --image-cache)."""
@@ -124,7 +135,7 @@ def extractor_for(cfg: Config, period: Period, image_cache: Path | None) -> Pane
         tilesize=cfg.imagery.tilesize,
         pad=cfg.imagery.pad,
         collection=cfg.imagery.collection,
-        bands=SPECTRAL + COUNTS,      # ADDITION: the counts come in the same request
+        bands=SPECTRAL + EXTRA,       # ADDITION: the extra bands come in the same request
         clear_threshold=cfg.imagery.clear_threshold,
         max_workers=cfg.imagery.max_workers,
         # DEVIATION from AMW: no image cache (AMW passes --image_cache_dir, pipeline.py:161).
@@ -142,7 +153,7 @@ def extractor_for(cfg: Config, period: Period, image_cache: Path | None) -> Pane
 
 def score_tile(tile, pixels: np.ndarray, model, stride: int) -> pd.DataFrame:
     """One row per chip: AMW's confidence, the six votes behind it, the image counts."""
-    spectral, counts = pixels[..., :len(SPECTRAL)], pixels[..., len(SPECTRAL):]
+    spectral, extra = pixels[..., :len(SPECTRAL)], pixels[..., len(SPECTRAL):]
     bounds = tile.geometry.bounds
 
     # Same as AMW, line for line (inference_engine.py:945-949, 766, 786).
@@ -160,15 +171,21 @@ def score_tile(tile, pixels: np.ndarray, model, stride: int) -> pd.DataFrame:
     for i in range(votes.shape[1]):
         rows[f"vote_{i + 1}"] = votes[:, i]
 
-    # ADDITION: per chip, the mean image counts and the share of empty pixels (no clear
-    # image: 0 in every band, which the model sees as black), over the same squares.
+    # ADDITION: per chip, the mean image counts, the share of empty pixels (no clear
+    # image: 0 in every band, which the model sees as black), and the average day of the
+    # clear images, over the same squares. The day is the chip's clear days summed over
+    # its pixels, divided by its clear images summed the same way, so a pixel with more
+    # clear images weighs more and an empty pixel not at all; no clear image: missing.
     empty = (spectral == 0).all(axis=-1)
-    layers, _ = cut_chips(np.dstack([counts, empty]), bounds, CHIP_PX, stride,
+    layers, _ = cut_chips(np.dstack([extra, empty]), bounds, CHIP_PX, stride,
                           crs="epsg:4326")
-    means = layers.mean(axis=(1, 2))                        # (chips, 3)
+    means = layers.mean(axis=(1, 2))                        # (chips, 4)
     rows["n_obs"] = means[:, 0]
     rows["n_clear"] = means[:, 1]
-    rows["empty_share"] = means[:, 2]
+    rows["empty_share"] = means[:, 3]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rows["clear_day_mean"] = np.where(means[:, 1] > 0, means[:, 2] / means[:, 1],
+                                          np.nan).astype(np.float32)
     return rows
 
 
@@ -308,6 +325,11 @@ def saved_tiles(folder: Path) -> tuple[set[int], int]:
     parts = sorted(folder.glob("part_*.parquet"))
     if not parts:
         return set(), 0
+    for p in parts:
+        if "clear_day_mean" not in pq.read_schema(p).names:
+            raise SystemExit(f"DETECT ERROR: {p} was written by detect.py before "
+                             f"clear_day_mean was added (23 Oct); this folder's parts would "
+                             f"not match. Score into a new run, or move the folder aside")
     ids = np.concatenate([pd.read_parquet(p, columns=["chip_id"])["chip_id"].to_numpy()
                           for p in parts])
     if len(np.unique(ids)) != len(ids):
@@ -606,7 +628,7 @@ def check_image_cache(cfg: Config, folder: Path) -> Path:
     # images made with other bands or another cloud test would be read without notice.
     # The folder remembers the settings of its first user, and refuses any other.
     folder = folder.expanduser().resolve()
-    settings = {"collection": cfg.imagery.collection, "bands": SPECTRAL + COUNTS,
+    settings = {"collection": cfg.imagery.collection, "bands": SPECTRAL + EXTRA,
                 "clear_threshold": cfg.imagery.clear_threshold,
                 "tilesize": cfg.imagery.tilesize, "pad": cfg.imagery.pad}
     record = folder / "_settings.json"

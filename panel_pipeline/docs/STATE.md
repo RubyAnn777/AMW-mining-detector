@@ -76,7 +76,7 @@ Newest decisions first within each topic. "Rmd Dn" = `open_design_decisions.Rmd`
 | Periods | Separate Earth Engine composites per month and per quarter; monthly and quarterly are separate panels joined on `chip_id` | Ruby, 8 and 12 Oct |
 | **Last day of each period** | Period ends on the 1st of the next period (excluded by Earth Engine), so **every day is imaged**. AMW passes the last day as the end and so drops 31 Mar, 30 Jun, 30 Sep, 31 Dec. Proven, see `findings.md` §3. Keep ours | Ruby, 20 Oct (Rmd D9 keeps the alternative on record) |
 | Cloud recipe | AMW's median with Cloud Score+ `cs_cdf ≥ 0.6`, same for months and quarters | Ruby |
-| Quality variables | `n_obs`, `n_clear`, `empty_share` per chip, from extra bands in the **same** Earth Engine request | 15 Oct |
+| Quality variables | `n_obs`, `n_clear`, `empty_share` per chip, from extra bands in the **same** Earth Engine request; **`clear_day_mean`** (average day of the clear images) added from a third band, for the timing of growth. Its EECU cost is not measured yet | Ruby, 23 Oct (first three: 15 Oct) |
 | Work unit | One task = one **frequency × period × subregion** folder (840 tasks for the full plan); a task never shares its folder (lock) | Ruby, 19 Oct |
 | Lock | `_lock.json` per task folder with a 1-minute heartbeat; stale after 15 min; never run two processes on one subregion-period | 19 Oct |
 | Saving | Downloads stream without pause; a part is saved every 2 min or every `--batch-tiles` tiles; a finished task is merged into `part_00000.parquet` | 20 Oct (PR #1) |
@@ -142,7 +142,7 @@ run), `data/boundaries/Amazon_ACA/Amazon_ACA_{1..6}.geojson`,
 ```
 
 - detect columns: `chip_id`, `confidence` (float64), `vote_1..6` (float32), `n_obs`,
-  `n_clear`, `empty_share`. Hive folders, so pandas adds `period` and `subregion`.
+  `n_clear`, `empty_share`, `clear_day_mean` (from 23 Oct; README A6 says how to read them). Hive folders, so pandas adds `period` and `subregion`.
 - `chip_id` (int64) = UTM zone | tile column + 500 | tile row + 5000 | chip index (column-major,
   AMW's `cut_chips` order). Never join on coordinates (Mac and Linux differ in the 15th decimal).
 - Tile key `552:12:10.0:<zone>:<col>:<row>`: a fixed global grid, the same in every period.
