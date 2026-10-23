@@ -3,7 +3,7 @@
 # Fill in the three lines marked CHANGE once. Nothing here is a secret: the key file's
 # *path* is public, the file itself is not (chmod 600, never in git).
 
-GOETHE_GROUP="CHANGE"                                    # your group: `ls /work` shows it
+GOETHE_GROUP="goldmine"                                    # your group: `ls /work` shows it
 GOETHE_USER="${USER}"                                    # your login name
 GOETHE_WORK="/work/${GOETHE_GROUP}/${GOETHE_USER}"
 
