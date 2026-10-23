@@ -1,3 +1,5 @@
+> **History, not maintained.** Ruby's own notes on overlapping chips and SAM2 (8 Oct). The reasoning is in `round2_answers.md` §2 and §7; the open questions are D4–D6 in `../open_design_decisions.Rmd`.
+
 Overlapping chips in any kind of regression model
 
 Reasons it might not make sense as an econometric unit:

@@ -10,8 +10,7 @@ This file lists what is **decided** about how the chip panel is assembled, and w
 **open**. Every open item says what the MVP does in the meantime, so the code can be built and
 the decision taken later without rebuilding anything. Numbers marked *measured* come from the
 test runs `test_region_2026-10-19` (subregion 2, zone 20) and `test_region_para_2026-10-19`
-(subregion 4, zone 21). Reasoning in more depth: `notes/panel_assembly/strategy.md` in the
-project files.
+(subregion 4, zone 21). Reasoning in more depth: `code/panel_assembly_strategy.md`.
 
 # Decided principles
 
@@ -32,8 +31,8 @@ project files.
 | D2 | Chips near the edge of the scored area look isolated | Nothing yet |
 | D3 | How distances are measured | Both measures stored; flags use AMW's |
 | D4 | One mine fires a blob of overlapping chips | Nothing yet |
-| D5 | UTM zone seams are scored twice | Nothing yet (cell-structure thread) |
-| D6 | Unit of analysis | Chip panel only (cell-structure thread) |
+| D5 | UTM zone seams are scored twice | Both copies kept |
+| D6 | Unit of analysis: chips or 240 m cells | Chip panel only; 240 m cells proposed |
 | D7 | Border tiles listed in two subregions | Refuses the period, with a message |
 | D8 | Persistence rule | Not built yet; will be a flag |
 | D9 | Last day of each period | Our convention (last day included) |
@@ -108,15 +107,79 @@ cluster. **MVP:** AMW's rule as it is.
 ## D5. UTM zone seams are scored twice
 
 Each zone's tile grid runs ~4.5 km past the zone line, so a ~9 km strip at every seam enters the
-panel twice, on two unrelated grids, and no dedupe catches it. Open in the "Mutually exclusive
-cells" thread (`notes/cell_structure/overlap_facts.md`). **MVP:** both copies kept. Whatever rule is
-chosen becomes a column of the chip table, so no assembly code has to change.
+panel twice, on two unrelated grids, with different keys and different centres. Neither our
+chip_id dedupe nor AMW's centroid dedupe catches it. *Measured* at 66°W, 11–12°S: 183
+cross-zone tile pairs overlap, median 3.3%, max 81% of a tile. Amazon_ACA spans 7 zones (17–23).
 
-## D6. Unit of analysis
+**Proposed rule:** keep a cell (or chip) only if its centre lies inside its own zone's 6° band.
+**MVP:** both copies kept. Whatever rule is chosen becomes a column of the chip table, so no
+assembly code has to change.
 
-Chip (overlapping 480 m), a 240 m cell (proposed in the cells thread) or an administrative unit.
-It depends on the resolution of the regressors. **MVP:** the chip panel; any aggregation is a later,
-separate step.
+## D6. Unit of analysis: overlapping chips or non-overlapping cells
+
+*Measured* 19 Oct from the code (`core/tile_utils.py`, `core/gee.py`, `lib/grid.py`), not from
+comments, with `checks/overlap/overlap.py` and `tiles.py` (areas in EPSG:6933, equal-area). Ruby,
+23 Oct: the analysis level is not known yet (municipality, a border buffer, ...); the aim is to
+measure how mining **grows**, so the panel needs counts or areas at a fine spatial level.
+
+**How the geometry is built.**
+
+1. `DLTile.iter_from_shape(region, tilesize=552, pad=12, resolution=10)` lays UTM squares on a
+   fixed grid, one per UTM zone. Tile key = `552:12:10.0:zone:ti:tj`.
+2. `get_tile_data` (gee.py) does not download the UTM square. It takes the lon/lat bounding box
+   of the reprojected, slightly tilted square and asks for 576 × 576 pixels filling it. So every
+   tile has its own lat/lon pixel grid, slightly bigger than the square.
+3. `cut_chips` slides a 48 px window in 24 px steps: 23 × 23 = 529 chips, column-major. Chip
+   polygons are interpolated from the same box, so the polygon in `chips.parquet` is exactly the
+   footprint the model saw.
+
+**What overlaps** (*measured*):
+
+| Level | Overlap? | Kind | Size |
+|---|---|---|---|
+| Subregions 1–6 | no | | largest pairwise intersection 0.0 |
+| Tiles on subregion borders | same tile twice | side effect (6 separate jobs) | 1,186 of 274,932 tiles (0.43%), 1 tile three times; same key, so dedupe on chip_id is exact (D7) |
+| Neighbouring tiles, padding | yes | by design (`pad: 12`) | a 24 px shared strip, median 4.2% of a tile per pair; tiling covers its area 1.093 times (Madre de Dios) |
+| Neighbouring tiles, projection | yes | side effect (lat/lon box of a tilted square) | even with pad 0: median 0.35%, max 0.70% per pair |
+| UTM zone seams | yes, large | side effect | D5 |
+| Chips inside a tile | ×4 | by design (stride 24) | chip area / union = 3.99 (La Pampa), 4.01 (Madre de Dios) |
+| "Every other chip" | almost disjoint | side effect (projection) | 0 inside a tile; across tile edges 29–31% of the subset overlaps a neighbour by up to 7.5% of a chip; ~0.7% of area counted twice. So the 8 Oct claim of an "exact 480 m grid" is wrong, and it would discard 75% of the scores |
+
+Chip area is 231,666–233,666 m², not 230,400, because the pixels sit on a lat/lon grid.
+
+**Why the overlaps by design exist.** The 24 px stride means anything up to 240 m across fits
+whole inside at least one chip; without it a mine on a chip edge is cut in two and each half may
+be too small to detect. The padding makes the chips of neighbouring tiles continue one seamless
+24 px lattice (chip offsets run `24 × (23·ti + j) − 12` across tile edges). The projection
+slivers and the zone seams have no purpose; both can be removed by a rule.
+
+**Why it matters for growth.** A chip is 2 × 2 blocks of 240 m. A mine covering k × k blocks
+touches (k+1)² = k² + 2k + 1 chips: area plus perimeter plus one. A mine growing from 1 to
+2 × 2 blocks grows ×4 in area but from 4 to 9 chips, ×2.25. Chip counts understate the growth
+of expanding mines and overstate the size of small ones: a bias with a known sign, not noise.
+(In practice the detector won't fire on every touching chip, but the structure stays.)
+
+**The proposal: a 240 m cell lattice for analysis, chips stay the measurement.** The stride
+lattice already partitions space. Cut each padded tile into 24 × 24 blocks of 24 px; block 23 of
+tile i is the same ground as block 0 of tile i+1 (the padding), so keep blocks 1–23: 529 cells
+per tile, one per chip, an exact partition in UTM within a zone. Each interior cell lies under
+exactly 4 chip windows (two may belong to the neighbouring tile). The cell's value is a function
+of those 4 scores (mean, max, any above the threshold), or of the SAM2 mask pixels inside it,
+which then sum correctly because no pixel is counted twice. Each cell has one centre, so it
+belongs to exactly one municipality or buffer and aggregates up exactly. Zone seams: D5's rule.
+
+**Objections.** It doesn't remove spatial dependence, it gives it a known form: neighbouring
+cells share 2 of their 4 chips, so a cell outcome is a 2 × 2 moving average by construction.
+Standard errors must still be clustered (tile) or Conley. If the regressors vary at municipality
+level, the effective N is the number of municipalities, not billions of rows. And growth rates
+will differ by aggregation level (the modifiable areal unit problem); that is chosen with the
+research question.
+
+**Still to answer:** the main regressors and their spatial level; the exact SAM2 idea; whether
+the outcome is the score, a 0/1 detection or mined area.
+
+**MVP:** the chip panel, every score kept. A cell layer would be a later, separate step built
+from the stored chip scores, with no new Earth Engine requests.
 
 ## D7. Border tiles
 
@@ -172,3 +235,24 @@ sorted by `chip_id`). Adding a variable means adding a layer and never touching 
 reading puts the layers side by side. Time-invariant chip attributes (tile, `in_andes`, square)
 stay once in `plan/chips.parquet`, not repeated in every period. **MVP:** two layers,
 `scores` (detect's values) and `postprocess` (AMW's flags and distances).
+
+# Leftovers from earlier reviews
+
+Added 23 Oct 2026 so that no open item lives only in an archived note. The letters are the
+item numbers of the 19 Oct review (`history/quarterly_and_parallel_runs.md` §6) and of the
+Goethe plan (`cluster/cluster_plan_goethe.md`); the reasoning is there.
+
+| # | Topic | Now | Proposal |
+|---|---|---|---|
+| L1 (R2, R5) | **Earth Engine compute budget and the scope of periods** | At ~130 EECU-s per tile-quarter and 40 requests in flight, about 90k tile-periods a day: the full plan (38.5 M) takes ~14 months | Look up the project's real quota (Cloud console, Earth Engine quotas); measure a monthly period's EECU cost with `checks/bench_download.py`; then choose the scope (e.g. quarterly first) or ask Google for more concurrency |
+| L2 | Service-account login on Goethe | `lib/config.py` accepts only `earth_engine: project` | Add the `credentials:` key (`cluster/service_account_guide.md` Part C) |
+| L3 (C1) | Earth Engine adds scenes late | Each session records when it ran | Re-score the last quarter before the final panel |
+| L4 (D4) | Quarterly first? | Order is monthly, then quarterly (Ruby, 8 Oct) | Quarterly is a third of the requests and less cloudy; with L1 binding, a complete quarterly panel first may be worth more |
+| L5 (D5) | GPU for scoring | CPU only | Not needed while Earth Engine is the limit (R2); one test job if that changes |
+| L6 (C5) | A task longer than the job time limit | Resubmitting resumes it | Fine as is; tile shards only if it becomes a nuisance |
+| L7 (A1) | `--run` is resolved from the current folder, config paths from the repository root | Run every command from the repository root | Resolve a relative `--run` from the repository root |
+| L8 (A5) | Hive partition columns come back as text | `lib/read_panel.py` and the notebook set the types | Keep doing so in every reader |
+| L9 (A6) | A moved run folder keeps its old `output_root` in the frozen config | Harmless | Check the folder name against `run.name` |
+| L10 (B2) | No dry run | | `--dry-run`: print periods, tiles, folders and their state, stop before the Earth Engine login |
+| L11 (B3) | `--from 2026-01` with quarterly is refused | Refused | Say "did you mean 2026Q1?" |
+| L12 (B5) | A cloud-wrecked period looks complete | | Print the period's mean `n_clear` and `empty_share` in its closing log line |

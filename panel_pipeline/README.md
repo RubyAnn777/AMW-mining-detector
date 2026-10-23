@@ -47,10 +47,17 @@ panel_pipeline/
     config.py periods.py grid.py lock.py provenance.py read_panel.py
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
-    explore_runs.ipynb  bench_scoring.py  bench_download.py
-  docs/
-    open_design_decisions.Rmd   decided principles and open design decisions
-    history/                    older notes, kept for the record
+    explore_runs.ipynb  bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
+  docs/                   everything written down about the pipeline; start at docs/README.md
+    README.md                   which document answers what
+    STATE.md                    where the project stands, and every decision with its date
+    open_design_decisions.Rmd   decided principles and every open question
+    findings.md                 what we measured (test runs, AMW comparison, speed, Earth Engine cost)
+    team_brief.md               the short version for colleagues
+    code/                       how our scripts work and why they are built that way
+    theory/                     computer-science concepts behind the code
+    cluster/                    the Goethe plan and the Earth Engine service account
+    history/                    older notes, kept for the record, each says what replaced it
 
 amw_comparison/   our scores against AMW's published ones (own README)
 cluster/          Goethe job scripts (Part B)

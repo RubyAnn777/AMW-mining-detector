@@ -13,7 +13,6 @@ amw_comparison/
 ├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
 ├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
 ├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
-├── compare_subregion3.ipynb   the same, run on all of subregion 3 for 2026Q3 (with results)
 ├── tests/            python -m unittest discover -s amw_comparison/tests
 └── data/amw/         AMW's files as you downloaded them (ignored by git)
 
@@ -31,7 +30,7 @@ detections only (their public README); the quarterly files line up, as this chec
 
 ## Results
 
-**Subregion 3, 2026Q3** (all 34,825 tiles, scored 20 to 22 October; `compare_subregion3.ipynb`):
+**Subregion 3, 2026Q3** (all 34,825 tiles, scored 20 to 22 October; `compare.ipynb` set to this run):
 
 | ours | AMW | both | only ours | only AMW | overlap | scores identical | median gap | largest gap |
 |---|---|---|---|---|---|---|---|---|
@@ -120,5 +119,4 @@ about 3 to 4 seconds per tile. At that pace subregion 3 takes about 30 to 36 hou
 workers up to twice that if Earth Engine is the bottleneck, so plan for **1.5 to 3 days**. The
 log prints the minutes for each 100-tile batch; minutes per batch × 349 batches is the total.
 
-**5. Compare.** Open `compare_subregion3.ipynb` (a copy of `compare.ipynb` set to this run and
-2026Q3), Run All. It takes about 2 minutes and 5 to 6 GB of memory.
+**5. Compare.** Open `compare.ipynb`, point it at this run and 2026Q3, and Run All. It takes about 2 minutes and 5 to 6 GB of memory.

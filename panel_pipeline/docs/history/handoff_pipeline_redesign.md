@@ -1,3 +1,5 @@
+> **History, not maintained.** an older copy of `handoff_manual.md` (before §7a). Read `../STATE.md` instead.
+
 # Handoff manual: the econometric panel pipeline
 
 **What this is:** every technical detail and decision from the thread "Which pipeline
