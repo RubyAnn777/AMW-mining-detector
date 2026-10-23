@@ -7,7 +7,8 @@ Downloads a few tiles of a planned run three ways, one request at a time, and as
 Engine for each request's compute profile (ee.data.profiling: the work its servers did,
 in EECU-seconds, which is what a project's monthly quota counts):
     amw       AMW's recipe only: the 13 bands' cloud-free median (gee.py:208-229)
-    panel     what detect.py downloads: AMW's recipe plus the two image counts
+    panel     what detect.py downloads: AMW's recipe plus the three extra bands
+              (22 Oct, with two of them: ~130 EECU-s per tile-quarter)
     bounded   the same as panel, but every image collection is first cut to the tile's
               footprint (filterBounds), so Earth Engine only joins and scans the images
               that touch the tile. On 22 Oct (5 tiles of subregion 3, 2026Q3) its pixels
@@ -47,7 +48,7 @@ class Bounded(detect.PanelExtractor):
     region = None                                # the tile being downloaded
 
     def _build_composite(self, start_date, end_date):
-        # Copy of AMW's recipe (gee.py:208-229) and detect.py's counts, with one change:
+        # Copy of AMW's recipe (gee.py:208-229) and detect.py's extra bands, with one change:
         # .filterBounds(self.region) after .filterDate.
         s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterDate(start_date, end_date)
         if self.region is not None:
@@ -57,10 +58,7 @@ class Bounded(detect.PanelExtractor):
         composite = (s2.linkCollection(cs, ["cs_cdf"])
                      .map(lambda img: img.updateMask(img.select("cs_cdf").gte(t)))
                      .median().toFloat())
-        scores = s2.linkCollection(cs, ["cs_cdf"]).select("cs_cdf")
-        clear = scores.map(lambda img: img.updateMask(img.gte(t)))
-        return (composite.addBands(scores.count().rename("n_obs").toUint16())
-                         .addBands(clear.count().rename("n_clear").toUint16()))
+        return composite.addBands(detect.quality_bands(s2, start_date, t))
 
     def get_tile_data(self, tile):
         self.region = ee.Geometry.Rectangle(tile.geometry.bounds)
