@@ -68,3 +68,7 @@ amw_comparison/data/
 # Earth Engine service-account keys: never in git
 .secrets/
 deforestation-and-mining-*.json
+
+# Slurm job logs (plan-*.out, detect-test-*.out, slurm-*.out): written next to where
+# sbatch was run, usually the repository root on Goethe. Logs, not code.
+*.out
