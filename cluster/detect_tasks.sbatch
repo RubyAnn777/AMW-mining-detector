@@ -48,11 +48,12 @@ echo "task list: ${TASKS} ($(grep -c . "${TASKS}") lines)"
 
 # xargs starts AT_ONCE shells, hands each the next line as the command to run, and
 # keeps going until the file is empty. Each task's own log is its folder's _log.txt;
-# its screen output goes to this job's slurm-<id>.out, prefixed with its period.
+# its screen output goes to this job's slurm-<id>.out, prefixed with its period
+# (sed -u: line by line; without it sed holds about 4 KB back when writing to a file).
 grep . "${TASKS}" | xargs -P "${AT_ONCE}" -I '{}' bash -c \
     'line="{}"; tag=$(echo "$line" | sed -E "s/.*--from ([^ ]+).*--subregion ([0-9]+).*/\1 s\2/; s/.*--subregion ([0-9]+).*--from ([^ ]+).*/\2 s\1/"); \
      echo "$(date -u +%FT%TZ) start  $tag"; \
-     $line --workers '"${WORKERS}"' 2>&1 | sed "s/^/[$tag] /"; \
+     $line --workers '"${WORKERS}"' 2>&1 | sed -u "s/^/[$tag] /"; \
      echo "$(date -u +%FT%TZ) end    $tag (exit ${PIPESTATUS[0]})"' &
 XARGS_PID=$!
 
