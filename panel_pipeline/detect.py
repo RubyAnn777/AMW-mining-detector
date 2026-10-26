@@ -96,8 +96,13 @@ def quality_bands(s2, start_date: str, clear_threshold: float):
     scores = s2.linkCollection(ee.ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED"),
                                ["cs_cdf"]).select("cs_cdf")
     clear = scores.map(lambda img: img.updateMask(img.gte(clear_threshold)))
-    days = scores.map(lambda img: ee.Image.constant(img.date().difference(start, "day").floor())
-                      .toFloat().updateMask(img.gte(clear_threshold)))
+    # The day as a band of the image itself (0 where cloudy, masked where no data), not an
+    # ee.Image.constant: a constant image has no footprint, so Earth Engine had to open
+    # every Sentinel-2 image of the quarter on the planet to sum it, and the request never
+    # answered (26 Oct 2026, Mac and Goethe alike). With the footprint kept, it opens only
+    # the images that touch the tile, as it does for the other four bands.
+    days = scores.map(lambda img: img.gte(clear_threshold)
+                      .multiply(img.date().difference(start, "day").floor()).toFloat())
     return (scores.count().rename("n_obs").toUint16()
             .addBands(clear.count().rename("n_clear").toUint16())
             .addBands(days.sum().rename("clear_day_sum").toFloat())

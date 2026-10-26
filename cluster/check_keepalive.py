@@ -15,6 +15,11 @@ The script sends detect.py's own request (the `panel` recipe, one tile) through 
 connection with keepalive switched on, and prints how long the answer took. One
 attempt, no retries: either a line with seconds and MB within about two minutes, or a
 TimeoutError after 300 s. Nothing is written.
+
+Outcome (26 Oct 2026): not needed. The same request timed out from Ruby's Mac too,
+so the network was never the cause; it was an ee.Image.constant without a footprint
+in detect.quality_bands (fixed the same evening). Kept as a diagnostic in case a
+network question comes up again.
 """
 from __future__ import annotations
 
