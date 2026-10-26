@@ -641,7 +641,7 @@ STOP_MESSAGE = ("DETECT STOPPED; every scored tile is saved. Run the same comman
 
 
 def stop_on_signal(signum, frame) -> None:
-    """First stop request: save what is scored, give the lock back, exit. Second: exit now."""
+    """First stop request: save what is scored, give the lock back, exit. Second Ctrl-C: exit now."""
     # ADDITION: without this, a scheduler's time limit (SIGTERM) or a closed terminal
     # (SIGHUP) ends Python at once and leaves the lock behind until it goes stale. The
     # first request only raises a flag, which run_period checks after every tile, so a
@@ -655,6 +655,9 @@ def stop_on_signal(signum, frame) -> None:
         except OSError:
             pass
         return
+    if signum != signal.SIGINT:
+        return                           # a second SIGTERM (Slurm, then the job script that
+                                         # forwards it) is the same request, not "at once"
     for stop in STOP_SIGNALS:           # a third Ctrl-C must not interrupt the cleanup
         signal.signal(stop, signal.SIG_IGN)
     raise Stopped(f"DETECT STOPPED at once by a second {name}; tiles scored since the "
