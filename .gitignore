@@ -72,3 +72,7 @@ deforestation-and-mining-*.json
 # Slurm job logs (plan-*.out, detect-test-*.out, slurm-*.out): written next to where
 # sbatch was run, usually the repository root on Goethe. Logs, not code.
 *.out
+
+# A link to the run folders on /work (ln -s /work/<group>/<user>/runs runs), so they
+# show in an editor's file tree. Outputs, not code.
+/runs
