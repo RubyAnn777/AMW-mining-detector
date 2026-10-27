@@ -408,8 +408,21 @@ The full click-by-click version is in the "Cluster migration" thread. In short:
 
 ### B3. A run on the cluster, step by step
 
+**Every time you log in**, before anything else in this part (a closed terminal forgets
+all of it):
+
 ```bash
-source cluster/goethe_env.sh                                   # venv, key, thread limits
+ssh <user>@goethe.hhlr-gu.de                                   # from the laptop's terminal
+cd ~/AMW-mining-detector
+RUN=/work/<group>/<user>/runs/<run>                            # a shell variable: $RUN now stands for the run folder
+source cluster/goethe_env.sh                                   # venv (the prompt shows "(amw-panel)"), key file, thread limits
+squeue --me                                                    # what is running; nothing is also an answer
+```
+
+The commands below write `/work/.../<run>`; `$RUN` is the same thing once the line
+above was run in this terminal.
+
+```bash
 cp panel_pipeline/config.yaml configs/<run>.yaml               # then edit: name, output_root, clip_to
 python panel_pipeline/lib/config.py --config configs/<run>.yaml
 
