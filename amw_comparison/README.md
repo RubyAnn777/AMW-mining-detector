@@ -12,6 +12,7 @@ amw_comparison/
 ├── README.md         this file
 ├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
 ├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
+├── last_day.py       do compare_run.py's score gaps lie under the last day's scenes?
 ├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
 ├── compare_run.py    a whole cluster run: every subregion, quarters and their months (writes results)
 ├── compare_run.ipynb shows compare_run.py's results (laptop)
@@ -169,4 +170,14 @@ rsync -av grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_202
 ```
 
 Then open `compare_run.ipynb` and Run All (seconds).
+
+**4. Is it the last day?** (laptop, a few small Earth Engine requests, per quarter):
+
+```bash
+python amw_comparison/last_day.py --results tests_output/aca_full_2026-10-23/amw_comparison --quarter 2025Q1
+```
+
+It lists the scenes taken on the quarter's last day and counts, per outcome, the chips under
+them and elsewhere. If the last day explains the gaps, "both, scores differ", "only ours" and
+"only AMW" lie almost all under those scenes.
 

@@ -187,5 +187,22 @@ class TestSceneDates(unittest.TestCase):
         self.assertIn("scenes without a Cloud Score+ image: 1", text)
 
 
+class TestLastDay(unittest.TestCase):
+    def test_under_last_day(self):
+        import shapely
+        from last_day import under_last_day
+        chips = pd.DataFrame({
+            "amw_key_x":      [0.5, 0.5, 0.5, 5.0, 5.0],
+            "amw_key_y":      [0.5, 0.5, 0.5, 5.0, 5.0],
+            "confidence":     [0.9, 0.9, 0.9, 0.9, 0.1],
+            "amw_confidence": [0.9, 0.8, np.nan, 0.9, 0.7],
+        })
+        t = under_last_day(chips, shapely.box(0, 0, 1, 1))
+        self.assertEqual(t.loc["both"].iloc[:2].tolist(), [2, 1])
+        self.assertEqual(t.loc["both, scores differ"].iloc[:2].tolist(), [1, 0])
+        self.assertEqual(t.loc["only ours"].iloc[:2].tolist(), [1, 0])
+        self.assertEqual(t.loc["only AMW"].iloc[:2].tolist(), [0, 1])
+
+
 if __name__ == "__main__":
     unittest.main()
