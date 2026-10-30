@@ -47,8 +47,14 @@ def task_state(run: Path, frequency: str, period: str, subregion: int) -> dict:
 
 def one_subregion(run, quarter, months, subregion, chips, amw, inputs):
     """The joined rows for one quarter and subregion, only chips someone detected."""
-    ours = read_ours(run, quarter, subregion)
-    table, unmatched = match(chips.merge(ours, on="chip_id", validate="one_to_one"), amw)
+    ours = chips.merge(read_ours(run, quarter, subregion), on="chip_id", validate="one_to_one")
+    # Two of our chips can share AMW's location key (the same ground in two tiles,
+    # e.g. where UTM zones overlap). AMW keeps the higher score for a key
+    # (dedupe_detections, postprocess.py:146), so we do the same before joining.
+    ours = (ours.sort_values("confidence", ascending=False, kind="mergesort")
+                .drop_duplicates(["amw_key_x", "amw_key_y"]))
+    same_key = len(chips) - len(ours)
+    table, unmatched = match(ours, amw)
     month_cols = []
     for month in months:
         if inputs[("monthly", month, subregion)]["state"] != "complete":
@@ -62,11 +68,17 @@ def one_subregion(run, quarter, months, subregion, chips, amw, inputs):
     off_grid = should_have_matched(unmatched, chips)
     join = {"quarter": quarter, "subregion": subregion,
             "AMW rows on our chips": int(table["amw_confidence"].notna().sum()),
-            "should have matched": int(off_grid.sum())}
+            "should have matched": int(off_grid.sum()),
+            "chips sharing a key, dropped": same_key}
     detected = ((table["confidence"] > RAW_THRESHOLD) | (table["amw_confidence"] > RAW_THRESHOLD)
                 | (table["months_detected"] > 0))
     kept = table.loc[detected].drop(columns=["minx", "miny", "maxx", "maxy"])
     return kept.assign(subregion=subregion), join
+
+
+def same_key_note(join) -> str:
+    n = join["chips sharing a key, dropped"]
+    return f"{n:,} chips sharing a location key dropped " if n else ""
 
 
 if __name__ == "__main__":
@@ -112,7 +124,8 @@ if __name__ == "__main__":
             kept[q].append(rows)
             joins.append(join)
             print(f"subregion {n} {q}: {len(chips):,} chips, {len(rows):,} detected by someone, "
-                  f"{join['should have matched']} should have matched "
+                  f"{join['should have matched']} should have matched, "
+                  f"{same_key_note(join)}"
                   f"({(time.time() - t) / 60:.1f} min)", flush=True)
         del chips
 
@@ -122,9 +135,10 @@ if __name__ == "__main__":
             continue
         rows = pd.concat(parts, ignore_index=True)
         # A border tile is in two subregions' lists and was scored twice; keep the
-        # higher score, as AMW's concat does (postprocess.py:146).
-        rows["border_copies"] = rows.groupby("chip_id")["chip_id"].transform("size")
-        rows = (rows.sort_values("confidence", ascending=False)
-                    .drop_duplicates("chip_id").sort_values("chip_id"))
+        # higher score per location, as AMW's concat does (postprocess.py:146).
+        key = ["amw_key_x", "amw_key_y"]
+        rows["border_copies"] = rows.groupby(key)["chip_id"].transform("size")
+        rows = (rows.sort_values("confidence", ascending=False, kind="mergesort")
+                    .drop_duplicates(key).sort_values("chip_id"))
         rows.to_parquet(out / f"chips_{q}.parquet", index=False)
         print(f"{q}: {len(rows):,} chips -> {out / f'chips_{q}.parquet'}", flush=True)
