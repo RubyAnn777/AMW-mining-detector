@@ -58,20 +58,24 @@ def read_amw(path: Path) -> pd.DataFrame:
     return out
 
 
-def task_folder(run: Path, quarter: str, subregion: int) -> Path:
-    return run / "detect" / "quarterly" / f"period={quarter}" / f"subregion={subregion}"
+def task_folder(run: Path, period: str, subregion: int, frequency: str = "quarterly") -> Path:
+    """One detect.py task's folder; period is '2025Q1' or, for monthly, '2025-01'."""
+    return run / "detect" / frequency / f"period={period}" / f"subregion={subregion}"
 
 
-def read_ours(run: Path, quarter: str, subregion: int, votes: bool = False,
-              only=None) -> pd.DataFrame:
-    """Our scores for one quarter and subregion: every chip, above threshold or not.
+def read_ours(run: Path, period: str, subregion: int, votes: bool = False,
+              only=None, frequency: str = "quarterly",
+              cols=("chip_id", "confidence", "n_obs", "n_clear", "empty_share")) -> pd.DataFrame:
+    """Our scores for one period and subregion: every chip, above threshold or not.
 
+    Reads every part file in the folder (part_00000.parquet once merged, or
+    part_00001.parquet ... while a period is unfinished or was never merged).
     votes: add vote_1..6. only: read just these chip_ids (saves memory).
     """
-    cols = ["chip_id", "confidence", "n_obs", "n_clear", "empty_share"]
+    cols = list(cols)
     if votes:
         cols += [f"vote_{i}" for i in range(1, 7)]
-    folder = task_folder(run, quarter, subregion)
+    folder = task_folder(run, period, subregion, frequency)
     parts = sorted(folder.glob("part_*.parquet"))
     if not parts:
         raise FileNotFoundError(f"no part files in {folder}; has detect.py run?")
@@ -80,22 +84,30 @@ def read_ours(run: Path, quarter: str, subregion: int, votes: bool = False,
                      ignore_index=True)
 
 
-def read_status(run: Path, quarter: str, subregion: int) -> dict:
-    return json.loads((task_folder(run, quarter, subregion) / "_status.json").read_text())
+def read_status(run: Path, period: str, subregion: int, frequency: str = "quarterly") -> dict:
+    return json.loads((task_folder(run, period, subregion, frequency) / "_status.json").read_text())
 
 
 def read_chips(run: Path, subregion: int | None = None) -> pd.DataFrame:
     """Our planned chips (of one subregion's tiles, if given).
 
-    Without tile_key: as text it would take most of the memory.
+    Without tile_key: as text it would take most of the memory. For one
+    subregion the file is filtered while it is read, so a whole-basin plan
+    (about 146 M chips) never sits in memory at once.
     """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
     cols = ["chip_id", "minx", "miny", "maxx", "maxy", "amw_key_x", "amw_key_y"]
-    chips = pd.read_parquet(run / "plan" / "chips.parquet", columns=cols)
-    chips["tile"] = chips["chip_id"] // 1000      # the tile's number (grid.py, chip_ids)
+    data = ds.dataset(run / "plan" / "chips.parquet", format="parquet")
+    keep = None
     if subregion is not None:
         tiles = pd.read_csv(run / "plan" / "tiles.csv")
         keys = tiles.loc[tiles["subregion"] == subregion, "tile_key"]
-        chips = chips[chips["tile"].isin([key_number(k) for k in keys])].reset_index(drop=True)
+        numbers = pa.array([key_number(k) for k in keys], type=pa.int64())
+        keep = pc.is_in(pc.divide(pc.field("chip_id"), 1000), value_set=numbers)
+    chips = data.to_table(columns=cols, filter=keep).to_pandas()
+    chips["tile"] = chips["chip_id"] // 1000      # the tile's number (grid.py, chip_ids)
     return chips
 
 

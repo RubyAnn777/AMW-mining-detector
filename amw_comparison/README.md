@@ -13,6 +13,8 @@ amw_comparison/
 ├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
 ├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
 ├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
+├── compare_run.py    a whole cluster run: every subregion, quarters and their months (writes results)
+├── compare_run.ipynb shows compare_run.py's results (laptop)
 ├── tests/            python -m unittest discover -s amw_comparison/tests
 └── data/amw/         AMW's files as you downloaded them (ignored by git)
 
@@ -120,3 +122,51 @@ workers up to twice that if Earth Engine is the bottleneck, so plan for **1.5 to
 log prints the minutes for each 100-tile batch; minutes per batch × 349 batches is the total.
 
 **5. Compare.** Open `compare.ipynb`, point it at this run and 2026Q3, and Run All. It takes about 2 minutes and 5 to 6 GB of memory.
+
+## A whole run on the cluster: 2025 Q1 and Q2, quarterly and monthly
+
+`compare.ipynb` reads one subregion into memory, which is too much for a whole-basin run.
+So the run is compared in two parts: `compare_run.py` does the heavy join on Goethe and writes
+a small results folder; `compare_run.ipynb` shows it on the laptop.
+
+What it compares: our quarter with AMW's quarter, chip by chip, in every subregion (border
+tiles once, the higher score, as AMW does). AMW has no months, so our three months are
+compared with AMW's quarter: how many of them detect each chip, and the union of the three.
+
+**1. AMW's 2025 files, once.** Download from
+https://source.coop/earthgenome/amazon-mining-watch, folder `raw_detections/`, by hand:
+`amazon_basin_Q125_t0.4.geojson` and `amazon_basin_Q225_t0.4.geojson`. Put them in
+`amw_comparison/data/amw/` in the repository on Goethe, e.g. from the laptop:
+
+```bash
+scp amazon_basin_Q125_t0.4.geojson amazon_basin_Q225_t0.4.geojson \
+    grambauer@goethe.hhlr-gu.de:~/AMW-mining-detector/amw_comparison/data/amw/
+```
+
+**2. On Goethe** (after the usual login lines, README B3 in `panel_pipeline/`):
+
+```bash
+cd ~/AMW-mining-detector && git pull
+source cluster/goethe_env.sh
+salloc --partition=test --nodes=1 --time=1:55:00 --mem=0
+srun python amw_comparison/compare_run.py --run /work/goldmine/grambauer/runs/aca_full_2026-10-23 \
+    --quarters 2025Q1 2025Q2
+exit
+```
+
+It reads each subregion's plan once and prints a line per subregion and quarter. Measured on
+subregion 3 (18.4 M chips, one quarter): 1.8 minutes and 5 GB; the largest subregion has about
+1.5 times as many chips, and each month adds its scores, so expect well under an hour for six
+subregions and two quarters. Tasks that are missing or incomplete are listed in `inputs.csv`
+and skipped. Results go to `/work/goldmine/grambauer/runs/aca_full_2026-10-23/amw_comparison/`:
+`inputs.csv`, `joins.csv`, `chips_2025Q1.parquet`, `chips_2025Q2.parquet` (a few MB).
+
+**3. On the laptop:**
+
+```bash
+rsync -av grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_2026-10-23/amw_comparison/ \
+          tests_output/aca_full_2026-10-23/amw_comparison/
+```
+
+Then open `compare_run.ipynb` and Run All (seconds).
+
