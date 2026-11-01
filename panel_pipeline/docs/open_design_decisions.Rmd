@@ -199,7 +199,7 @@ AMW exactly). Whatever is chosen is a flag (P2). Needs more than one year of dat
 
 Our periods end on the 1st of the next period, which Earth Engine excludes, so every day is in.
 AMW passes the period's last day as the (excluded) end, so 31 Mar, 30 Jun, 30 Sep and 31 Dec are
-never imaged. *Measured* (`amw_comparison/last_day_check.ipynb`), Pará 2026Q1: 56 detections ours
+never imaged. *Measured* (recorded in `amw_comparison/README.md`), Pará 2026Q1: 56 detections ours
 against 27 AMW's, and the whole gap is 31 March. AMW's own code reproduces both results exactly
 with the two end dates.
 

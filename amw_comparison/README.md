@@ -1,183 +1,102 @@
 # AMW comparison
 
-Does our pipeline reproduce AMW's published quarterly detections? We score the same
-area and quarter with `panel_pipeline/detect.py` and compare chip by chip with AMW's raw
-detections (confidence > 0.4): which chips each side detects, and how close the scores are.
-Area is left out.
+Does our pipeline reproduce AMW's published quarterly detections? We compare, chip by chip,
+our `detect.py` scores with AMW's raw detections (confidence > 0.4) of the same quarter: which
+chips each side detects, and how close the scores are. Area is left out. AMW has no months, so
+our three months are compared with AMW's quarter.
 
 ## Folder
 
 ```
 amw_comparison/
-├── README.md         this file
-├── compare.py        reads our run and AMW's file, joins them on AMW's chip key, counts
-├── scene_dates.py    lists the Sentinel-2 scenes that went into a quarter (explains gaps)
-├── last_day.py       do compare_run.py's score gaps lie under the last day's scenes?
-├── compare.ipynb     both tables' first rows, then inputs, join, counts, scores, diagnostics, map
-├── compare_run.py    a whole cluster run: every subregion, quarters and their months (writes results)
-├── compare_run.ipynb shows compare_run.py's results (laptop)
-├── tests/            python -m unittest discover -s amw_comparison/tests
-└── data/amw/         AMW's files as you downloaded them (ignored by git)
-
-configs/amw_compare_s3_2026-10-19.yaml     the long run's settings (committed)
-tests_output/amw_compare_s3_2026-10-19/    the long run's output (ignored by git)
+├── compare.py      joins a run with AMW's files and writes <run>/amw_comparison/ (the results)
+├── compare.ipynb   runs the join if needed, then shows it: counts, scores, last day, border, months
+├── last_day.py     are the differences under the scenes of the quarter's last day? (Earth Engine)
+├── tests/          python -m unittest discover -s amw_comparison/tests
+└── data/amw/       AMW's files as you downloaded them (ignored by git)
 ```
 
-How the join works: AMW's files have no chip ID, only each chip's square. AMW identifies
-a chip by its centre rounded to 5 decimals (`centroid_key`, core/postprocess.py:113), and
-`plan.py` already stores that key for every chip (`amw_key_x/y` in `plan/chips.parquet`).
-Equal keys mean the same chip. Checked on AMW's real files: all 8,101 / 19,389 / 25,646
-AMW detections centred in subregion 3 (Q1 / Q2 / Q3 2026) land on one of our planned chips.
-AMW's 16 October correction of a grid misalignment in subregion 3 concerns its 2025 annual
-detections only (their public README); the quarterly files line up, as this check shows.
-
-## Results
-
-**Subregion 3, 2026Q3** (all 34,825 tiles, scored 20 to 22 October; `compare.ipynb` set to this run):
-
-| ours | AMW | both | only ours | only AMW | overlap | scores identical | median gap | largest gap |
-|---|---|---|---|---|---|---|---|---|
-| 25,841 | 25,671 | 25,440 | 401 | 231 | 0.976 | 34% | 0.0013 | 0.23 |
-
-- Every AMW detection in subregion 3 lands on one of our chips (0 "should have matched").
-- 583 of the 632 disagreements have our score between 0.35 and 0.45.
-- The differences are in two areas (around 55°W 4.5°N and 46°W 3°S); elsewhere the scores are
-  identical. That fits the last day: 30 Sep is in our quarter and not in AMW's, and only the
-  areas a clear 30 Sep scene covered change.
-- No disagreements on the 462 border tiles.
-
-**Why quarters differ: the last day** (settled, see `referee_audit.md` and
-`last_day_check.ipynb`). AMW's quarter ends a day earlier (31 Mar, 30 Jun, 30 Sep are dropped).
-Rerunning AMW's own code on Pará 2026Q1 with our end date reproduces our scores exactly, and with
-AMW's end date reproduces AMW's published file exactly. We keep the last day.
-
-**test_region** (36 tiles in subregion 2), for reference:
-
-| quarter | ours | AMW | both | only ours | only AMW | scores identical |
-|---|---|---|---|---|---|---|
-| 2026Q1 | 84 | 84 | 84 | 0 | 0 | 100% |
-| 2026Q2 | 105 | 105 | 105 | 0 | 0 | 100% |
-| 2026Q3 | 146 | 148 | 145 | 1 | 3 | 0% (median gap 0.008, largest 0.074) |
-
-Upstream, checked 19 October (earthrise-media/mining-detector at `7bde733`): AMW's code that
-scores a quarter (`core/gee.py`, `inference_engine.py`, `inference_pipeline.py`, `tile_utils.py`,
-`periods.py`, `postprocess.py`) is the same as ours apart from comments, and the date windows
-and inference commands for Q3 are unchanged. Their newer commits are about publishing, area
-statistics and docs.
-
-AMW files compared (sha256, first 12 characters): Q126 `b4f35df7398e`, Q226 `5c57a94daca9`,
-Q326 `f2f56a0484f2`. AMW replaces its files when it re-runs, and the notebook prints these.
+**The join.** AMW's files have no chip ID, only each chip's square. AMW identifies a chip by its
+centre rounded to 5 decimals (`centroid_key`, core/postprocess.py:113), and `plan.py` stores that
+key for every chip (`amw_key_x/y` in `plan/chips.parquet`). Equal keys mean the same chip. Where
+one location has two of our chips (tiles overlapping where UTM zones meet, and border tiles, which
+both neighbouring subregions score), the higher score is kept, as AMW does
+(`dedupe_detections`, core/postprocess.py:146).
 
 ## Steps
 
 All commands from the repository root, in the venv.
 
-**0. AMW's files.** The notebook reads them from `amw_comparison/data/amw/`, names as
-downloaded from Source Cooperative:
+**1. AMW's files, by hand.** From https://source.coop/earthgenome/amazon-mining-watch, folder
+`raw_detections/`, the `_t0.4` file of each quarter, into `amw_comparison/data/amw/`:
+`amazon_basin_Q125_t0.4.geojson` is 2025Q1, `amazon_basin_Q326_t0.4.geojson` 2026Q3.
 
-```
-amazon_basin_Q126_t0.4.geojson   amazon_basin_Q126_t0.43_t-iso0.75.geojson
-amazon_basin_Q226_t0.4.geojson   amazon_basin_Q226_t0.43_t-iso0.75.geojson
-amazon_basin_Q326_t0.4.geojson   amazon_basin_Q326_t0.43_t-iso0.75.geojson
-```
+**2. Compare.** Open `compare.ipynb`, set `RUN` and `QUARTERS` in the first cell, *Run All*.
+The first time, section 1 runs the join and saves `<run>/amw_comparison/`; after that the
+notebook takes seconds (`REDO = True` joins again). The quick check is the test region (36
+tiles, under a minute); a whole-basin run needs its `plan/` and `detect/` folders on the laptop,
+and takes about 2 minutes and 6.5 GB of memory per subregion and quarter (measured on
+subregion 3, 18.4 M chips; the largest subregion has about 1.5 times as many).
 
-The comparison needs only the `_t0.4` files; the others are shown in section 0. A later
-quarter needs its files added there by hand. If `amazon_basin_detections.geojson` (AMW's one
-row per location) is there too, section 0 shows it.
-
-**1. Tests** (seconds, no Earth Engine): `python -m unittest discover -s amw_comparison/tests -v`
-
-**2. Quick check on test_region** (already scored): open `compare.ipynb`, keep
-`RUN = "tests_output/test_region_2026-10-19"`, Run All. Takes under a minute.
-
-**3. Why Q3 differs** (metadata only, a few small Earth Engine requests):
+The same join as a command, for example inside a job on Goethe (then copy only the small results
+folder to the laptop and open the notebook there):
 
 ```bash
-python amw_comparison/scene_dates.py --run tests_output/test_region_2026-10-19 --quarter 2026Q3
+python amw_comparison/compare.py --run tests_output/aca_full_2026-10-23 --quarters 2025Q1 2025Q2
 ```
 
-It lists the scenes of 30 Sep (ours only) and when Earth Engine ingested each late-September
-scene. Run it for 2026Q1 and 2026Q2 too: if those show no clear scene on their last day, the
-last day explains everything. Then set `CHECK_LAST_DAY = True` in the notebook to draw the last
-day's scenes on the map.
-
-**4. The long run: all of subregion 3, quarter 2026Q2.**
+**3. The last day** (needs Earth Engine): set `CHECK_LAST_DAY = True` in the notebook, or
 
 ```bash
-python panel_pipeline/plan.py --config configs/amw_compare_s3_2026-10-19.yaml
-caffeinate -i python panel_pipeline/detect.py --run tests_output/amw_compare_s3_2026-10-19 \
-    --frequency quarterly --subregion 3 --from 2026Q3 --to 2026Q3 --workers 3 --batch-tiles 100
+python amw_comparison/last_day.py --run tests_output/aca_full_2026-10-23 --quarter 2025Q1
 ```
 
-- Why subregion 3: the smallest (34,825 tiles, 18.4 M chips), no Andes, 462 border tiles.
-- The run that was done is 2026Q3. Another quarter goes into the same run with `--from`/`--to`.
-- `plan.py` takes about 15 minutes and writes about 160 MB.
-- `caffeinate -i` keeps the Mac awake while the command runs (plugged in, lid open).
-- `--workers 3` is the low setting; `--batch-tiles 100` saves every 100 tiles, so a stop
-  loses at most one batch. If it stops for any reason, run the same command again: it resumes.
-- Progress: `python panel_pipeline/status.py --run tests_output/amw_compare_s3_2026-10-19`.
+What `<run>/amw_comparison/` holds:
 
-**Runtime.** Your test_region quarters took 1.7 to 2.3 minutes for 36 tiles with 6 workers,
-about 3 to 4 seconds per tile. At that pace subregion 3 takes about 30 to 36 hours; with 3
-workers up to twice that if Earth Engine is the bottleneck, so plan for **1.5 to 3 days**. The
-log prints the minutes for each 100-tile batch; minutes per batch × 349 batches is the total.
+| file | what |
+|---|---|
+| `inputs.csv` | every task read (frequency, period, subregion): complete, tiles, failed tiles |
+| `amw_files.csv` | AMW's files compared, rows and fingerprint (AMW replaces files when it re-runs) |
+| `joins.csv` | per quarter and subregion: AMW rows on our chips, rows that should have matched (must be 0), our chips sharing a location |
+| `chips_<quarter>.parquet` | every chip that our quarter, AMW or one of our months detected: `confidence`, `amw_confidence`, `conf_<month>`, `months_detected`, image quality, `subregion`, `border_copies`, `border_spread` |
 
-**5. Compare.** Open `compare.ipynb`, point it at this run and 2026Q3, and Run All. It takes about 2 minutes and 5 to 6 GB of memory.
+## Results
 
-## A whole run on the cluster: 2025 Q1 and Q2, quarterly and monthly
+**The last day explains the differences.** AMW's quarter ends a day early: its code passes the
+quarter's last day as Earth Engine's end date, which is excluded, so 31 Mar, 30 Jun, 30 Sep and
+31 Dec are never imaged (AMW's file names end `_2026-03-31`). Ours ends on the 1st of the next
+month. We keep the last day: our quarters are whole calendar quarters, like our months.
 
-`compare.ipynb` reads one subregion into memory, which is too much for a whole-basin run.
-So the run is compared in two parts: `compare_run.py` does the heavy join on Goethe and writes
-a small results folder; `compare_run.ipynb` shows it on the laptop.
+- **Pará test area, 2026Q1** (20 Oct). We detect 56 chips, AMW 27. AMW's own code, run with AMW's
+  end date, reproduces AMW's published file exactly (27 of 27, identical scores). Run with our
+  end date, it reproduces our scores exactly (56 of 56). Our code is AMW's; only the date differs.
+  Q1 is the rainy season (median 4.6 clear looks per pixel against 16.6 in Q2), so one extra
+  clear scene moves the median image a lot.
+- **Whole basin, 2025Q1** (30 Oct, subregions 2 and 3): 196 scenes taken on 31 March. All 104 chips
+  only one side detects (44 ours, 60 AMW's) and 900 of the 904 chips both detect with different
+  scores lie under those scenes. Elsewhere the scores are identical.
 
-What it compares: our quarter with AMW's quarter, chip by chip, in every subregion (border
-tiles once, the higher score, as AMW does). AMW has no months, so our three months are
-compared with AMW's quarter: how many of them detect each chip, and the union of the three.
+**Counts**
 
-**1. AMW's 2025 files, once.** Download from
-https://source.coop/earthgenome/amazon-mining-watch, folder `raw_detections/`, by hand:
-`amazon_basin_Q125_t0.4.geojson` and `amazon_basin_Q225_t0.4.geojson`. Put them in
-`amw_comparison/data/amw/` in the repository on Goethe, e.g. from the laptop:
+| run | quarter | ours | AMW | both | only ours | only AMW | scores identical |
+|---|---|---|---|---|---|---|---|
+| test region (s2, 36 tiles) | 2026Q1 | 84 | 84 | 84 | 0 | 0 | 100% |
+| test region | 2026Q2 | 105 | 105 | 105 | 0 | 0 | 100% |
+| test region | 2026Q3 | 146 | 148 | 145 | 1 | 3 | 0% (largest gap 0.074) |
+| Pará (s4, 42 tiles) | 2026Q1 | 56 | 27 | 26 | 30 | 1 | 8% (largest gap 0.27) |
+| Pará | 2026Q2 | 732 | 732 | 732 | 0 | 0 | 100% |
+| subregion 3, all 34,825 tiles | 2026Q3 | 25,841 | 25,671 | 25,440 | 401 | 231 | 34% (median gap 0.0013) |
 
-```bash
-scp amazon_basin_Q125_t0.4.geojson amazon_basin_Q225_t0.4.geojson \
-    grambauer@goethe.hhlr-gu.de:~/AMW-mining-detector/amw_comparison/data/amw/
-```
+- Every AMW detection on our grid lands on one of our chips (0 "should have matched"), also at
+  full size. One AMW chip in subregion 2, 2025Q1 falls between ours (a seam case, not checked).
+- Disagreements sit near the threshold: in subregion 3, 583 of the 632 have our score between
+  0.35 and 0.45.
+- On 19 Oct the test region and Pará were re-checked independently, matching AMW's squares to
+  ours by overlap instead of the key: the same pairs and the same numbers.
 
-**2. On Goethe** (after the usual login lines, README B3 in `panel_pipeline/`):
+AMW files compared (sha256, first 12 characters): Q126 `b4f35df7398e`, Q226 `5c57a94daca9`,
+Q326 `f2f56a0484f2`. The notebook prints the fingerprints of the files it used.
 
-```bash
-cd ~/AMW-mining-detector && git pull
-source cluster/goethe_env.sh
-salloc --partition=test --nodes=1 --time=1:55:00 --mem=0
-srun python amw_comparison/compare_run.py --run /work/goldmine/grambauer/runs/aca_full_2026-10-23 \
-    --quarters 2025Q1 2025Q2
-exit
-```
-
-It reads each subregion's plan once and prints a line per subregion and quarter. Measured on
-subregion 3 (18.4 M chips, one quarter): 1.8 minutes and 5 GB; the largest subregion has about
-1.5 times as many chips, and each month adds its scores, so expect well under an hour for six
-subregions and two quarters. Tasks that are missing or incomplete are listed in `inputs.csv`
-and skipped. Results go to `/work/goldmine/grambauer/runs/aca_full_2026-10-23/amw_comparison/`:
-`inputs.csv`, `joins.csv`, `chips_2025Q1.parquet`, `chips_2025Q2.parquet` (a few MB).
-
-**3. On the laptop:**
-
-```bash
-rsync -av grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_2026-10-23/amw_comparison/ \
-          tests_output/aca_full_2026-10-23/amw_comparison/
-```
-
-Then open `compare_run.ipynb` and Run All (seconds).
-
-**4. Is it the last day?** (laptop, a few small Earth Engine requests, per quarter):
-
-```bash
-python amw_comparison/last_day.py --results tests_output/aca_full_2026-10-23/amw_comparison --quarter 2025Q1
-```
-
-It lists the scenes taken on the quarter's last day and counts, per outcome, the chips under
-them and elsewhere. If the last day explains the gaps, "both, scores differ", "only ours" and
-"only AMW" lie almost all under those scenes.
-
+Upstream, checked 19 October (earthrise-media/mining-detector at `7bde733`): AMW's code that
+scores a quarter (`core/gee.py`, `inference_engine.py`, `inference_pipeline.py`, `tile_utils.py`,
+`periods.py`, `postprocess.py`) is the same as ours apart from comments.
