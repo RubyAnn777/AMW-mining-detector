@@ -1,0 +1,39 @@
+# Direct requirements of panel_pipeline/ (plan, detect, status, assemble) and of the
+# AMW modules it imports from core/ (gee, tile_utils, postprocess).
+# Versions are pinned to AMW's requirements-lock_2026-09-18.txt, the versions on Ruby's
+# Mac, so a score on the cluster comes from the same code as a score on the laptop.
+# The lock files next to this file are generated from it, one per platform:
+#   uv pip compile requirements/panel.in -c requirements/constraints-amw-2026-09-18.txt \
+#       --python-version 3.11 --python-platform x86_64-manylinux_2_28 -o requirements/panel-linux.txt
+# Do not edit the lock files by hand.
+
+# scoring
+tensorflow==2.14.0
+keras==2.14.0
+numpy==1.26.4
+h5py==3.16.0
+
+# Earth Engine and AMW's downloader (core/gee.py)
+earthengine-api==1.7.35
+google-api-core==2.30.3
+google-auth==2.56.0
+
+# tiles and chips (core/tile_utils.py, descarteslabs' DLTile grid)
+descarteslabs==2.1.2
+geopandas==1.1.0
+shapely==2.1.2
+pyproj==3.7.2
+rasterio==1.4.4
+affine==2.4.0
+
+# tables
+pandas==3.0.3
+pyarrow==25.0.0
+PyYAML==6.0.3
+
+# AMW's postprocess.py (isolation rule); missing from AMW's own requirements.txt
+scikit-learn
+
+# notebooks and figures (explore_runs.ipynb); harmless on the cluster
+matplotlib==3.11.0
+jupyter

@@ -1,32 +1,22 @@
-# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector
+# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork (comments/docstrings only); upstream original: earthrise-media/mining-detector
 
-# =============================================================================
-# FILE OVERVIEW — scripts/dissolve.py
-#
-# Standalone buffered-dissolve utility: merges adjacent/overlapping chip
-# detections into contiguous polygons. Same core idea as dissolve_patches()
-# in core/postprocess.py (buffer +w, union, explode, buffer -w), but with
-# optional confidence thresholding FIRST and WITHOUT the mean-confidence
-# aggregation step (output polygons carry no attribute columns).
-#
-# Pipeline role: quick post-inference cleanup of a single detections file
-# when the full postprocess.py machinery is not needed. Upstream, chips are
-# 48x48-px (~23 ha) squares in EPSG:4326 scored by the SSL4EO+MLP ensemble.
-#
-# Invocation:
-#   python scripts/dissolve.py detections.geojson --threshold 0.8 \
-#       --column confidence --buffer_width 0.00001
-#
-# Inputs on disk : one GeoJSON of chip detections (typically EPSG:4326 chip
-#   squares with a per-chip score column, e.g. 'confidence' or 'prob').
-# Outputs on disk: `<input stem>-dissolved-<threshold>.geojson` next to the
-#   input (just `-dissolved` when no threshold is given; upstream fix 2026-07).
-# =============================================================================
+# >> FILE OVERVIEW
+# >> Standalone CLI: merge touching chip squares in a detection file into polygons.
+# >> Not called by scripts/pipeline.py (production dissolves via
+# >> postprocess.dissolve_patches inside persistence.py). Upstream file, fork comments.
+import argparse
+import sys
+from pathlib import Path
 
-import argparse  # CLI parsing
+import geopandas as gpd
 
-import geopandas as gpd  # GeoDataFrames: read_file, buffer, unary_union, explode
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+from postprocess import PostprocessConfig  # noqa: E402
 
+# >> Buffered dissolve of one GeoJSON: optional score filter, grow, union, shrink.
+# >> Writes <input>-dissolved[-<threshold>].geojson beside the input at 6 decimals.
+# >> Gotcha: output has no CRS and no confidence column (unlike dissolve_patches).
+# >> Gotcha: path.split('.geojson') cuts at the FIRST '.geojson' in the whole path.
 def dissolve(path, threshold, column, buffer_width):
     """Merge adjacent patch-wise mine detections into polygons.
 
@@ -68,6 +58,7 @@ def dissolve(path, threshold, column, buffer_width):
     # (join_style=2 = mitred corners, keeps squares square), then
     # unary_union merges the whole layer into one (Multi)Polygon.
     # (unary_union is the legacy name for what union_all() does now.)
+    # >> Buffer width 1e-5 in the file's CRS units = DEGREES for EPSG:4326 (~1.1 m).
     dissolved = df.geometry.buffer(buffer_width, join_style=2).unary_union
     # Step 3: wrap in a one-row frame, explode the MultiPolygon into one row
     # per connected component; reset_index gives a clean 0..N-1 RangeIndex.
@@ -81,7 +72,10 @@ def dissolve(path, threshold, column, buffer_width):
     base = path.split('.geojson')[0]
     suffix = f'-dissolved-{threshold}' if threshold is not None else '-dissolved'
     outpath = base + suffix + '.geojson'
-    df.to_file(outpath)  # write dissolved polygons (driver inferred from ext)
+    # Pinned so precision does not float with the GDAL/pyogrio version; see
+    # core/postprocess.py and docs/design/persistence-planning.md.
+    # >> File write: dissolved polygons, GeoJSON, 6 decimals.
+    df.to_file(outpath, driver="GeoJSON", COORDINATE_PRECISION=PostprocessConfig.coordinate_precision)
 
 if __name__ == '__main__':
     

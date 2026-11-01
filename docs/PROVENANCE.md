@@ -1,16 +1,16 @@
 <!-- PROVENANCE: FORK-ORIGINAL — GENERATED FILE, do not edit by hand; regenerate with scripts/provenance_report.py -->
 # File provenance manifest
 
-Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
+Generated 2026-09-18 — fork `641da68` vs upstream/main `4797004`.
 
 | Category | Files |
 |---|---|
-| FORK-ORIGINAL | 81 |
+| FORK-ORIGINAL | 96 |
 | FORK-MODIFIED | 5 |
-| UPSTREAM-IDENTICAL | 56 |
-| upstream-only (deleted/archived here) | 457 |
+| UPSTREAM-IDENTICAL | 78 |
+| upstream-only (deleted/archived here) | 416 |
 
-## FORK-ORIGINAL (81)
+## FORK-ORIGINAL (96)
 
 - `data/boundaries/la_pampa_corridor.geojson`
 - `data/boundaries/madre_de_dios_mining_aoi.geojson`
@@ -75,12 +75,26 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `data/timeseries/tiles/tile_stats_q2025Q2.csv`
 - `data/timeseries/tiles/tile_stats_q2025Q3.csv`
 - `data/timeseries/tiles/tile_stats_q2025Q4.csv`
+- `data/timeseries_run2/detections/detections_m2026-01.geojson`
+- `data/timeseries_run2/detections/detections_m2026-02.geojson`
+- `data/timeseries_run2/detections/detections_m2026-03.geojson`
+- `data/timeseries_run2/detections/detections_q2026Q1.geojson`
+- `data/timeseries_run2/panels/panel_m2026-01.parquet`
+- `data/timeseries_run2/panels/panel_m2026-02.parquet`
+- `data/timeseries_run2/panels/panel_m2026-03.parquet`
+- `data/timeseries_run2/panels/panel_q2026Q1.parquet`
+- `data/timeseries_run2/tiles/tile_stats_m2026-01.csv`
+- `data/timeseries_run2/tiles/tile_stats_m2026-02.csv`
+- `data/timeseries_run2/tiles/tile_stats_m2026-03.csv`
+- `data/timeseries_run2/tiles/tile_stats_q2026Q1.csv`
 - `docs/CODE_WALKTHROUGH.md`
 - `docs/DECISION_REGISTER.md`
 - `docs/GIT_PLAYBOOK.md`
 - `docs/LECTURE.md`
 - `docs/OPTIMIZATIONS.md`
 - `docs/PROVENANCE.md`
+- `docs/RUN2_SETUP_AND_AUDIT.md`
+- `docs/RUNBOOK.md`
 - `docs/pipeline_spatial_card.md`
 - `requirements-lock_2026-07-17.txt`
 - `scripts/provenance_report.py`
@@ -91,7 +105,8 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `timeseries/coverage.py`
 - `timeseries/explore_results.ipynb`
 - `timeseries/panel.py`
-- `timeseries/run_overnight.sh`
+- `timeseries/resource_limits.py`
+- `timeseries/run_staged.sh`
 - `timeseries/run_trials.py`
 
 ## FORK-MODIFIED (5)
@@ -102,12 +117,11 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `scripts/dissolve.py`
 - `utils/gee_data_pull.py`
 
-## UPSTREAM-IDENTICAL (56)
+## UPSTREAM-IDENTICAL (78)
 
 - `"data/boundaries/geo_holdout_napo-caquet\303\241.geojson"`
 - `"data/boundaries/geo_holdout_par\303\241-kayap\303\263.geojson"`
 - `"data/boundaries/test_region_par\303\241.geojson"`
-- `.env.sample`
 - `.gitattributes`
 - `LICENSE`
 - `core/README.md`
@@ -120,10 +134,17 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `core/inference_pipeline.py`
 - `core/model_evaluation.ipynb`
 - `core/model_library.py`
+- `core/periods.py`
+- `core/persistence.py`
+- `core/persistence_rule_diff.py`
+- `core/persistence_rule_eval.py`
+- `core/pipeline_config.py`
 - `core/postprocess.py`
 - `core/sam2_build_cog.py`
 - `core/sam2_combine_masks.py`
+- `core/sam2_logits.py`
 - `core/sam2_mask.py`
+- `core/sam2_persistence.py`
 - `core/tf_darwin.py`
 - `core/tile_utils.py`
 - `data/boundaries/amazon_basin.geojson`
@@ -153,16 +174,33 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `data/outputs/48px_v0.X-SSL4EO-MLPensemble/cumulative/amazon_basin_48px_v0.X-SSL4EO-MLPensemble2025Q3diff-clean-gt11ha.geojson`
 - `data/outputs/48px_v0.X-SSL4EO-MLPensemble/cumulative/amazon_basin_48px_v0.X-SSL4EO-MLPensemble2025Q4diff-clean-gt11ha.geojson`
 - `data/outputs/MANIFEST.yaml`
+- `data/public/README.md`
+- `data/public/illegality_analysis_by_jurisdiction.csv`
+- `data/public/mined_areas_by_jurisdiction.csv`
+- `docs/design/jurisdiction-areas.md`
+- `docs/design/persistence-planning.md`
+- `docs/design/pipeline.md`
 - `models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5`
 - `models/48px_v4.10b-18d-20g-21a-22bc-ensemble_config-t0.4.txt`
 - `models/48px_v4.10b-18d-20g-21a-22bc-ensemble_config-t0.43.txt`
 - `requirements.txt`
 - `scripts/__init__.py`
+- `scripts/boundaries/collate_jurisdiction_areas.py`
 - `scripts/boundaries/compare_area_changes.py`
+- `scripts/boundaries/raster_area.py`
+- `scripts/convert_logits_to_smoothed.py`
 - `scripts/geo_filter.py`
+- `scripts/pipeline.py`
+- `scripts/stage_outputs.py`
+- `scripts/templates/amw_archived_README.md`
+- `scripts/templates/amw_dev_README.md`
+- `scripts/templates/amw_published_README.md`
+- `scripts/templates/source_coop_README.md`
+- `scripts/write_mask_config.py`
 
-## Upstream-only — deleted/archived in this fork (457)
+## Upstream-only — deleted/archived in this fork (416)
 
+- `.env.sample`
 - `core/collect_sampling_locations.ipynb`
 - `core/embed.ipynb`
 - `core/embed_cls_patch.ipynb`
@@ -193,38 +231,7 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `data/boundaries/ghana.json`
 - `data/boundaries/ghana_ashanti.geojson`
 - `data/boundaries/guinea-east.geojson`
-- `data/boundaries/illegality/out/illegality_v1_areas.geojson`
-- `data/boundaries/illegality/out/illegality_v2_areas_simplified.geojson`
 - `data/boundaries/kalimantan.geojson`
-- `data/boundaries/national_admin/out/mining_by_national_admin/amazon_basin_2018-2025Q3_all_differences.csv`
-- `data/boundaries/national_admin/out/mining_by_national_admin/amazon_basin_2018-2025Q3_all_differences.json`
-- `data/boundaries/national_admin/out/national_admin.geojson`
-- `data/boundaries/national_admin/out/national_admin_impacts.geojson`
-- `data/boundaries/national_admin/out/national_admin_impacts_unfiltered.geojson`
-- `data/boundaries/national_admin/out/national_admin_yearly.json`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_country_name_counts.csv`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_country_name_status_counts.csv`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_territories.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_territories_impacts.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_territories_impacts_unfiltered.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/indigenous_territories_yearly.json`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/mining_by_indigenous_territories/amazon_basin_2018-2025Q3_all_differences.csv`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/mining_by_indigenous_territories/amazon_basin_2018-2025Q3_all_differences.json`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/mining_by_protected_areas/amazon_basin_2018-2025Q3_all_differences.csv`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/mining_by_protected_areas/amazon_basin_2018-2025Q3_all_differences.json`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_areas.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_areas_impacts.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_areas_impacts_unfiltered.geojson`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_areas_yearly.json`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_country_name_counts.csv`
-- `data/boundaries/protected_areas_and_indigenous_territories/out/protected_country_name_status_counts.csv`
-- `data/boundaries/subnational_admin/out/admin_areas.geojson`
-- `data/boundaries/subnational_admin/out/admin_areas_display.geojson`
-- `data/boundaries/subnational_admin/out/admin_areas_display_impacts.geojson`
-- `data/boundaries/subnational_admin/out/admin_areas_display_impacts_unfiltered.geojson`
-- `data/boundaries/subnational_admin/out/admin_areas_display_yearly.json`
-- `data/boundaries/subnational_admin/out/mining_by_subnational_admin/amazon_basin_2018-2025Q3_all_differences.csv`
-- `data/boundaries/subnational_admin/out/mining_by_subnational_admin/amazon_basin_2018-2025Q3_all_differences.json`
 - `data/boundaries/tapajos_basin.geojson`
 - `data/boundaries/test_region_andes.geojson`
 - `data/boundaries/test_region_bolivia.geojson`
@@ -324,17 +331,6 @@ Generated 2026-08-02 — fork `e15dae2` vs upstream/main `bbbcb2d`.
 - `data/outputs/ei/yanomami/labeled-yanomami.geojson`
 - `data/outputs/ei/yanomami/unlabeled-yanomami.geojson`
 - `data/outputs/ei/yanomami/yanomami.geojson`
-- `data/outputs/website/amazon_basin_2018-2025Q3_all_differences.geojson`
-- `data/outputs/website/amazon_basin_2018-2025Q3_all_differences_simplified.geojson`
-- `data/outputs/website/mining_201800_simplified.geojson`
-- `data/outputs/website/mining_201900_simplified.geojson`
-- `data/outputs/website/mining_202000_simplified.geojson`
-- `data/outputs/website/mining_202100_simplified.geojson`
-- `data/outputs/website/mining_202200_simplified.geojson`
-- `data/outputs/website/mining_202300_simplified.geojson`
-- `data/outputs/website/mining_202400_simplified.geojson`
-- `data/outputs/website/mining_202502_simplified.geojson`
-- `data/outputs/website/mining_202503_simplified.geojson`
 - `data/sampling_locations/ACAexpanded_amazon_negatives2025-08.geojson`
 - `data/sampling_locations/ACAexpanded_amazon_positives2025-08.geojson`
 - `data/sampling_locations/BD_MineriaAurifera_Peru-cleaned_2025-08samp500.geojson`
