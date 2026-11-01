@@ -134,10 +134,12 @@ def make_run(root: str | Path, panel: bool = True, comparison: bool = True) -> P
     by_sub = {n: g for n, g in t.groupby("subregion")}
     month_scores: dict[tuple[str, int], pd.DataFrame] = {}
     for sub, g in by_sub.items():
-        ids = np.concatenate([chip_ids(a, b) for a, b in zip(g["ti"], g["tj"])])
+        where = list(zip(g["ti"], g["tj"]))
         keys = list(g["tile_key"])
         for m, month in enumerate(months):
-            s = scores(ids, seed=hash((month,)) % 1000, n_months=1)   # same seed for both copies of a border tile
+            # one seed per tile and period, so both copies of a border tile get the same values (as in a real run)
+            s = pd.concat([scores(chip_ids(a, b), seed=(m + 1) * 1000 + a * 10 + b, n_months=1) for a, b in where],
+                          ignore_index=True)
             month_scores[(month, sub)] = s
             folder = root / "detect" / "monthly" / f"period={month}" / f"subregion={sub}"
             folder.mkdir(parents=True, exist_ok=True)
@@ -145,7 +147,7 @@ def make_run(root: str | Path, panel: bool = True, comparison: bool = True) -> P
             (folder / "_status.json").write_text(json.dumps(
                 status("monthly", month, sub, keys, len(keys), len(s), None, model), indent=2))
         # the quarter: the months' counts add up; the picture (scores) is its own
-        q = scores(ids, seed=hash(("2025Q1",)) % 1000, n_months=3)
+        q = pd.concat([scores(chip_ids(a, b), seed=9000 + a * 10 + b, n_months=3) for a, b in where], ignore_index=True)
         q["n_obs"] = sum(month_scores[(m, sub)]["n_obs"] for m in months).astype(np.float32)
         q["n_clear"] = sum(month_scores[(m, sub)]["n_clear"] for m in months).astype(np.float32)
         folder = root / "detect" / "quarterly" / "period=2025Q1" / f"subregion={sub}"

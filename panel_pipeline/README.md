@@ -44,11 +44,8 @@ panel_pipeline/
     config.py periods.py grid.py lock.py provenance.py read_panel.py
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
-    explore_runs.ipynb      one run, streamed: tasks, checks, border tiles, the panel against
-                            detect, months against quarters, maps, compare.py's results
-    performance.ipynb + performance.py (a run's speed, limits, core-hours)
-    bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
-    tests/                  unit tests; fake_run.py makes a tiny made-up run to try the notebooks on
+    explore_runs.ipynb  bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
+    performance.ipynb + performance.py (a run's speed, limits, core-hours; tests in tests/)
   docs/                   everything written down about the pipeline; start at docs/README.md
     README.md                   which document answers what
     STATE.md                    where the project stands, and every decision with its date
@@ -334,11 +331,7 @@ q = read_panel(run, "quarterly", periods=["2026Q1"],
                         "postprocess": ["det_raw"]})
 ```
 
-`panel_pipeline/checks/explore_runs.ipynb` reads one run this way, streamed so a big run
-fits a laptop: integrity checks per task, the border tiles (scored twice; which copy the
-panel kept), the assembled panel against detect's counts, months against their quarter,
-maps, and `compare.py`'s results against AMW. `python panel_pipeline/checks/tests/fake_run.py
-tests_output/fake_run` makes a tiny made-up run to try it on.
+`panel_pipeline/checks/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
 Reading a whole period of the full Amazon this way needs ~18 GB of memory; on a laptop,
 read one `period=` folder, or a few columns. On Goethe, anything bigger than a test area
 is read inside a job (B6), not on the login node.
