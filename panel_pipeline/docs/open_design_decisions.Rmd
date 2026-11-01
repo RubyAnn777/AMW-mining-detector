@@ -31,9 +31,9 @@ test runs `test_region_2026-10-19` (subregion 2, zone 20) and `test_region_para_
 | D2 | Chips near the edge of the scored area look isolated | Nothing yet |
 | D3 | How distances are measured | Both measures stored; flags use AMW's |
 | D4 | One mine fires a blob of overlapping chips | Nothing yet |
-| D5 | UTM zone seams are scored twice | Both copies kept |
+| D5 | UTM zone seams are scored twice | Both copies kept; AMW's dedupe for its neighbour catalogue |
 | D6 | Unit of analysis: chips or 240 m cells | Chip panel only; 240 m cells proposed |
-| D7 | Border tiles listed in two subregions | Refuses the period, with a message |
+| D7 | Border tiles listed in two subregions | AMW's rule (the higher copy); copies that differ are counted |
 | D8 | Persistence rule | Not built yet; will be a flag |
 | D9 | Last day of each period | Our convention (last day included) |
 | D10 | DuckDB or pandas/pyarrow | pandas/pyarrow |
@@ -115,6 +115,13 @@ cross-zone tile pairs overlap, median 3.3%, max 81% of a tile. Amazon_ACA spans 
 **MVP:** both copies kept. Whatever rule is chosen becomes a column of the chip table, so no
 assembly code has to change.
 
+*Measured* 1 Nov (aca_full_2026-10-23): at the seam at 60°W, 368 chip pairs of subregion 2 have
+different chip_ids but the same AMW centre key (their centres round to the same point), so
+AMW's `dedupe_detections` catches these few; the rest of the seam's overlap stays uncaught.
+Assembly does what AMW does before the neighbour search: one catalogue point per key, the
+higher score. Both chips keep their rows; the one dropped gets no distance and `det_* = False`,
+and the record counts it (`twins_dropped`). A zone rule chosen here would replace this.
+
 ## D6. Unit of analysis: overlapping chips or non-overlapping cells
 
 *Measured* 19 Oct from the code (`core/tile_utils.py`, `core/gee.py`, `lib/grid.py`), not from
@@ -185,9 +192,17 @@ from the stored chip scores, with no new Earth Engine requests.
 
 A tile on a subregion border is listed under both subregions and scored twice, under the same
 `chip_id`. AMW keeps the copy with the higher confidence. Under P1 we could instead keep both with a
-flag. **MVP:** none of the test runs has border tiles; `assemble_period.py` refuses a period
-in which a chip was scored twice, with a message naming this decision. To be built once a run
-with border tiles exists.
+flag.
+
+*Measured* 1 Nov (aca_full_2026-10-23): 218 border tiles (115,322 chips) between subregions 2
+and 3; in all 8 periods the two copies are identical in every column. They are the same
+Earth Engine request for the same tile, so this is expected.
+
+**MVP (1 Nov):** one row per chip, AMW's rule (the higher confidence; on a tie, the lower
+subregion, which is also the `subregion` column). `_record.json` counts the chips scored twice,
+the copies that differ and the largest confidence gap, and `check_panel.py` fails if any copy
+differs. **For Ruby:** keep AMW's rule, or keep both copies with a flag (only worth it if
+copies ever differ).
 
 ## D8. Persistence rule
 

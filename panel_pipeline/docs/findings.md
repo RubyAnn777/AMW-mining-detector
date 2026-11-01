@@ -12,6 +12,7 @@ Contents:
 5. Earth Engine cost and limits
 6. Overlaps in the chip and tile structure
 7. Size on disk
+8. The first cluster run, assembled (aca_full_2026-10-23)
 
 ---
 
@@ -138,3 +139,56 @@ Chip area: 231,666–233,666 m², not 230,400, because the pixels sit on a lat/l
   Amazon_ACA: about 690 GB monthly and 230 GB quarterly.
 - A test-run image cache: about 4 MB per tile-period (432 images = 1.7 GB).
 - A full-ACA `plan.py`: about 2–3 h and 1.4 GB (*estimate*, 19 Oct).
+
+## 8. The first cluster run, assembled (aca_full_2026-10-23)
+
+Measured 1 Nov 2026 on the run's files (copied from Goethe), with `../assemble_period.py` and
+`../checks/check_panel.py`.
+
+**The run.** 16 tasks: subregions 2 and 3, each month of 2025-01 to 2025-06 and 2025Q1–Q2.
+All complete, 0 failed tiles, on Goethe 25–29 Oct (365 task-hours). Subregion 2: 53,084 tiles,
+28,081,436 chips; subregion 3: 34,825 tiles, 18,422,425 chips. Every complete task folder
+holds a single `part_00000.parquet`: detect.py merges the parts when a task completes. Its
+rows are not sorted by chip_id (about 865 row groups with overlapping ranges); assembly sorts.
+
+**Border tiles.** 218 tiles (115,322 chips) are in both subregions. In all 8 periods the two
+copies are identical in every column, scores and quality alike.
+
+**Masked pixels.** Since the 32-bit downloads (22 Oct) a pixel with no clear image arrives as
+`-inf`, and detect.py took it for a seen pixel (fixed 1 Nov, README A6). Chips with such a
+pixel, by task:
+
+| Period | Subregion 2 | Subregion 3 |
+|---|---|---|
+| 2025-01 | 29.6% | 58.4% |
+| 2025-02 | 63.8% | 80.2% |
+| 2025-03 | 36.6% | 56.7% |
+| 2025-04 | 36.1% | 41.6% |
+| 2025-05 | 47.5% | 22.8% |
+| 2025-06 | 33.9% | 21.6% |
+| 2025Q1 | 7.2% | 21.7% |
+| 2025Q2 | 5.8% | 0.8% |
+
+Up to 26% of chips have no clear image at all (`n_clear = 0`, subregion 3, February).
+
+**Same AMW centre, different chip.** At the UTM zone seam at 60°W (zones 20 and 21), 368 chip
+pairs of subregion 2 share AMW's rounded centre. AMW keeps one of each pair before the
+neighbour search; so do we (Rmd D5).
+
+**Assembly against AMW.** Two samples of the run: 947,968 chips (including 32 border tiles)
+and 379,822 chips across the 60°W seam. In all 8 periods the flags and distances equal those
+of AMW's own `dual_threshold_filter` run on the same scores, also with `--subregions 3`. The
+two old test runs re-assembled give identical values, and every check passes. Deliberately
+broken inputs are caught: differing border copies (the higher is kept and the border check
+fails), a chip twice in one subregion and a missing tile (assembly refuses), a flag changed
+by hand (the flags check fails).
+
+**What the panel shows** (the first sample):
+- 2025Q2: 12,876 raw detections, 11,656 loose, 8,257 stringent.
+- A chip with no clear image (a black square) scores at most 0.000.
+- In the months, raw detections per 1,000 chips rise with `n_clear`: 0.7 below 1, 7.7 from
+  1 to 3, 12.2 from 3 to 10. A monthly count mixes mining with the weather (Rmd D1, D8).
+- Of the chips detected in a quarter, 80–87% are also detected in at least one of its months.
+
+**Speed and memory.** A period of 10.5 M chips (a test run made for this): 40 s, 2.0 GB.
+*Estimate* for subregions 2 and 3 (46.4 M chips): about 3 min and 8 GB per period.
