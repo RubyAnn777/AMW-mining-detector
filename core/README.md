@@ -35,7 +35,7 @@ Various iterations of the code have worked with Pythons 3.9-3.11.
 ```
 python -m venv venv  # Consider whether you want to include --system-site-packages 
 source venv/bin/activate
-pip install -r requirements.txt  # May require tweaking - only critical version numbers are pinned.
+uv pip sync requirements/panel-macos.txt  # Mac; on Linux/Goethe: requirements/panel-linux.txt (see requirements/README.md)
 ```
 
 Run scripts from the `core/` folder; CLI paths are interpreted relative to the current working directory unless you pass absolutes.
