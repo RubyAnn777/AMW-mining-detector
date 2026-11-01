@@ -45,8 +45,11 @@ panel_pipeline/
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
     check_panel.py  panel_overview.ipynb   checks of an assembled panel, and a notebook to show it (A7)
-    explore_runs.ipynb  bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
-    performance.ipynb + performance.py (a run's speed, limits, core-hours; tests in tests/)
+    explore_runs.ipynb      one run, streamed: tasks, checks, border tiles, the panel against
+                            detect, months against quarters, maps, compare.py's results
+    performance.ipynb + performance.py (a run's speed, limits, core-hours)
+    bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
+    tests/                  unit tests; fake_run.py makes a tiny made-up run to try the notebooks on
   docs/                   everything written down about the pipeline; start at docs/README.md
     README.md                   which document answers what
     STATE.md                    where the project stands, and every decision with its date
@@ -343,7 +346,12 @@ q = read_panel(run, "quarterly", periods=["2025Q2"], subregions=[2, 3],
                columns={"postprocess": ["det_stringent"]})   # a panel assembled with --subregions
 ```
 
-`panel_pipeline/checks/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
+`panel_pipeline/checks/explore_runs.ipynb` reads one run this way, streamed so a big run
+fits a laptop: integrity checks per task, the border tiles (scored twice; which copy the
+panel kept), the assembled panel against detect's counts and values, months against their
+quarter, maps, and `compare.py`'s results against AMW; `checks/panel_overview.ipynb` (A7)
+shows the panel on its own. `python panel_pipeline/checks/tests/fake_run.py
+tests_output/fake_run` makes a tiny made-up run to try it on.
 Reading a whole period of the full Amazon this way needs ~18 GB of memory; on a laptop,
 read one `period=` folder, or a few columns. On Goethe, anything bigger than a test area
 is read inside a job (B6), not on the login node.
