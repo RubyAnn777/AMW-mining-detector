@@ -45,6 +45,7 @@ panel_pipeline/
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
     explore_runs.ipynb  bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
+    performance.ipynb + performance.py (a run's speed, limits, core-hours; tests in tests/)
   docs/                   everything written down about the pipeline; start at docs/README.md
     README.md                   which document answers what
     STATE.md                    where the project stands, and every decision with its date
@@ -440,7 +441,9 @@ task list continues them (verified 28 Oct 2026: four tasks stopped in 5 s).
 Measured on the first big run (27 Oct – 1 Nov 2026: 2025 Q1 and Q2 as quarters and as
 months, subregions 2 and 3, 703,000 tile-periods, 0 failed, about four days of three
 nodes). Until 26 Oct no request answered at all; the cause was in our code (B7, last
-row), not the network or a quota.
+row), not the network or a quota. `checks/performance.ipynb` reads all of the numbers
+below off any run, from the task folders' `_log.txt` and `_status.json` and a saved
+`sacct` listing (`python panel_pipeline/checks/performance.py --run $RUN` prints them).
 
 **1. The node's scoring is the limit.** Earth Engine answers a tile-quarter in 7–10 s and
 a tile-month in 4–6 s; the node's TensorFlow scoring is what the progress line shows as
