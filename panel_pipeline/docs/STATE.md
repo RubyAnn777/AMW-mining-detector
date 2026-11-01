@@ -1,6 +1,6 @@
 # Project state and decision log
 
-Last full update: **23 Oct 2026**. This file replaces the handoff manual
+Last full update: **23 Oct 2026**; §3, §4 and §6 updated 1 Nov. This file replaces the handoff manual
 (`history/handoff_manual.md`, 19 Oct) as the one place that says what is decided and where the
 project stands. Keep it short and current: whoever changes a decision or finishes a step
 updates the table here in the same commit.
@@ -49,11 +49,12 @@ what: `README.md` in this folder.
 | Step | Code | Run so far |
 |---|---|---|
 | `plan.py` | done | test_region, test_region_large, test_region_para, amw_compare_s3 (all of subregion 3) |
-| `detect.py` | done; streaming, 2-min saves, `_log.txt`, Ctrl-C saves, 300 s timeout, 32-bit pixels, compiled scoring (PR #1, merged 23 Oct) | test_region 2026 monthly + quarterly; Pará 2026Q1–Q3; **all of subregion 3, 2026Q3** (34,825 tiles, 0 failed) |
+| `detect.py` | done; streaming, 2-min saves, `_log.txt`, Ctrl-C saves, 300 s timeout, 32-bit pixels, compiled scoring (PR #1, merged 23 Oct); masked-pixel fix in the quality columns (1 Nov) | test_region 2026 monthly + quarterly; Pará 2026Q1–Q3; all of subregion 3, 2026Q3; **aca_full_2026-10-23: subregions 2 and 3, 2025-01 to 2025-06 and 2025Q1–Q2** (16 tasks, 0 failed tiles, Goethe 25–29 Oct) |
 | `status.py` | done, with `--todo` | |
-| `assemble_period.py` | **first version** (23 Oct): layers `scores` and `postprocess` | tested on the two small test runs; flags equal AMW's `dual_threshold_filter` in all 24 test periods |
+| `assemble_period.py` | **second version** (1 Nov): border tiles, `--subregions`, quality values lost to masked pixels made missing, reads the plan in pieces | samples of aca_full_2026-10-23 (0.95 M and 0.38 M chips, 8 periods): flags and distances equal AMW's own pipeline; the two old test runs re-assembled with identical values (`findings.md` §8) |
+| `checks/check_panel.py`, `checks/panel_overview.ipynb` | done (1 Nov): eight checks per period; a notebook to show the panel | all checks pass on the samples and the old test runs |
 | `build_panel.py` (persistence, across time) | not started; rule open (Rmd D8) | |
-| Cluster | `cluster/` job scripts and README Part B written (23 Oct) | not run on Goethe yet |
+| Cluster | `cluster/` job scripts and README Part B written (23 Oct) | detect run on Goethe 25–29 Oct: 16 tasks, 365 task-hours |
 | SAM2 | deferred | |
 
 **Before the full run, still open:** the Earth Engine compute budget and the scope of periods
@@ -93,7 +94,10 @@ Newest decisions first within each topic. "Rmd Dn" = `open_design_decisions.Rmd`
 | Layers | One file per layer and period, every planned chip once, in `chip_id` order: `<run>/panel/<freq>/<layer>/period=<tag>/data.parquet` + `_record.json` | 21 Oct (Rmd D13) |
 | One run at a time | The whole region is one run; parallel work happens inside it | Ruby, 21 Oct (Rmd P4) |
 | Tools | pandas and pyarrow; DuckDB open | Ruby, 21 Oct (Rmd P6, D10) |
-| Border tiles | Left out of the MVP: assemble refuses a period with a tile listed twice (Rmd D7) | Ruby, 21 Oct |
+| Border tiles | One row per chip, AMW's rule: the copy with the higher confidence (tie: the lower subregion); `_record.json` counts the copies that differ. Measured on 218 border tiles × 8 periods: the copies are identical in every column. Keeping both copies stays possible (Rmd D7) | proposed 1 Nov, for Ruby to confirm (21 Oct: "once we have data") |
+| Panel of part of the region | `--subregions 2 3` writes `<run>/panel_subregions_2_3/`; `panel/` is only for the whole region | 1 Nov |
+| Same AMW centre, different chip (zone seams) | As AMW: one catalogue point per AMW centre key before the neighbour search, the higher score (`dedupe_detections`). Both chips keep their rows; the one dropped gets no distance and `det_* = False`. 368 chip pairs at 60°W in subregion 2 (Rmd D5) | 1 Nov |
+| Masked pixels in the quality columns | detect.py fixed 1 Nov. Tasks scored 22 Oct–1 Nov: assembly makes the values that can't be recovered missing; the scores are unaffected. Re-scoring those tasks (365 task-hours) is open | 1 Nov |
 | Distances | Undecided; the MVP stores AMW's distance and a geodesic one (Rmd D3) | 21 Oct |
 | postprocess | AMW's loose (0.43/0.75) and stringent (0.55/0.8) rules, 5th neighbour beyond 3 km, as **flags** | Ruby |
 | Persistence | A flag; the rule is open (Rmd D8). `config.yaml` holds k = 2 within 12 months as a placeholder | Ruby |
@@ -139,6 +143,7 @@ run), `data/boundaries/Amazon_ACA/Amazon_ACA_{1..6}.geojson`,
       _status.json  _lock.json  _log.txt
   panel/<freq>/<layer>/period=<tag>/
       data.parquet  _record.json              layers: scores, postprocess (more later)
+  panel_subregions_2_3/<freq>/...             the same, for assemble_period.py --subregions 2 3
 ```
 
 - detect columns: `chip_id`, `confidence` (float64), `vote_1..6` (float32), `n_obs`,

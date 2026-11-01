@@ -2,25 +2,26 @@
 
 Run after detect.py has finished every subregion of a period:
     python panel_pipeline/assemble_period.py --run tests_output/<run> --frequency monthly
+    ... --subregions 2 3              only these subregions (default: all of the plan)
     ... --from 2026-01 --to 2026-03   only these periods (default: all of the run's)
     ... --allow-failed                accept tiles that failed every try (their chips get
                                       empty scores, scored = False)
 
-Writes two layers of the panel per period. Both hold every chip of the plan, once, sorted
-by chip_id, so their rows line up one to one:
-    <run>/panel/<frequency>/scores/period=<tag>/data.parquet        detect's values
-    <run>/panel/<frequency>/postprocess/period=<tag>/data.parquet   AMW's flags, distances
+Writes two layers of the panel per period. Both hold every chip of the chosen subregions'
+tiles, once, sorted by chip_id, so their rows line up one to one:
+    <run>/<panel>/<frequency>/scores/period=<tag>/data.parquet        detect's values
+    <run>/<panel>/<frequency>/postprocess/period=<tag>/data.parquet   AMW's flags, distances
 and a _record.json next to each: what went in, counts, settings, which code ran.
-
-pd.read_parquet("<run>/panel/monthly/scores") reads every period as one table, with the
-folder name as a `period` column; files starting with _ are skipped.
+<panel> is "panel" for the whole plan and "panel_subregions_2_3" for --subregions 2 3, so
+a panel of part of the region never mixes with the panel of all of it (lib/read_panel.py).
 
 Nothing written is ever changed (open_design_decisions.Rmd, P1 and P2). A layer that
 exists is skipped; later steps add new layers next to these. Run the same command again
 at any time: it assembles what is ready and missing, and says why the rest isn't.
 
-Memory: one period at a time, whole. That is ~40 MB for a test run, and roughly 10-20 GB
-for a full Amazon_ACA period: fine on a cluster node, too much for a laptop.
+Memory: one period at a time. Measured: 2 GB and 40 s for a period of 10.5 M chips. It
+grows with the chips: about 8 GB for subregions 2 and 3, 25 GB for all of Amazon_ACA
+(estimates).
 """
 from __future__ import annotations
 
@@ -35,6 +36,9 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyarrow.compute as pc
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import shapely
 import yaml
 from pyproj import Geod
@@ -47,6 +51,7 @@ from config import Config, load_config
 from lock import FolderLock, Locked
 from periods import Period
 from provenance import environment
+from read_panel import panel_name
 
 # AMW code. This must come after `grid`, which puts AMW's core/ on the search path.
 import postprocess as amw
@@ -59,6 +64,7 @@ QUALITY = ["n_obs", "n_clear", "n_clear_median", "empty_share", "thin_share",
 ROW_GROUP_ROWS = 200 * 529     # 200 tiles of 529 chips. build_panel.py will read an area
                                # (a chip_id range) at a time; Parquet skips the row groups
                                # outside it, because each records its smallest and largest id
+BATCH_ROWS = 1_000_000         # detect's part files are read this many rows at a time
 GEOD = Geod(ellps="WGS84")     # distances on the Earth's real shape (open decision D3)
 
 
@@ -95,6 +101,57 @@ def tile_number(key: str) -> int:
     """A tile key's number, the part of its chip_ids before the last three digits (grid.py)."""
     zone, ti, tj = (int(float(part)) for part in key.split(":")[3:])
     return (zone * 1000 + ti + 500) * 10_000 + tj + 5000
+
+
+# ------------------------------------------------------------ the plan
+
+class Plan:
+    """The chips of the chosen subregions: their ids, in order, and what is fixed about them.
+
+    Every period's layers have exactly these rows. Read once, used for every period.
+    """
+
+    def __init__(self, run_dir: Path, tiles: pd.DataFrame, subregions: list[int]):
+        self.subregions = subregions
+        self.chips_file = run_dir / "plan" / "chips.parquet"
+        tiles = tiles[tiles["subregion"].isin(subregions)].assign(
+            tile=lambda t: t["tile_key"].map(tile_number))
+        # A border tile is listed once per subregion; its chips are one row, credited to
+        # the lowest subregion until a score says otherwise (see place_scores).
+        home = tiles.groupby("tile")["subregion"].min()
+        self.tiles = home.index.to_numpy()                 # sorted, unique
+        self.border_tiles = int((tiles.groupby("tile").size() > 1).sum())
+
+        # The chip ids come from the plan's own file, not from a formula. Read in batches,
+        # two columns, so the whole-region file (145 M chips) never sits in memory at once.
+        ids, andes = [], []
+        for batch in pq.ParquetFile(self.chips_file).iter_batches(
+                batch_size=BATCH_ROWS, columns=["chip_id", "in_andes"]):
+            chip_id = batch.column("chip_id").to_numpy()
+            mine = np.isin(chip_id // 1000, self.tiles)
+            ids.append(chip_id[mine])
+            andes.append(batch.column("in_andes").to_numpy(zero_copy_only=False)[mine])
+        self.ids = np.concatenate(ids)
+        self.in_andes = np.concatenate(andes)
+        if not (np.all(np.diff(self.ids) > 0)
+                and np.array_equal(np.unique(self.ids // 1000), self.tiles)):
+            raise SystemExit("ASSEMBLE ERROR: plan/chips.parquet and plan/tiles.csv disagree "
+                             "(chips missing for a tile, or not sorted by chip_id)")
+        tile_of_chip = np.searchsorted(self.tiles, self.ids // 1000)
+        self.home = home.to_numpy().astype(np.int8)[tile_of_chip]   # subregion per chip
+
+    def squares(self, ids: np.ndarray) -> np.ndarray:
+        """The squares (minx, miny, maxx, maxy) of some chips, in the order of `ids`."""
+        table = ds.dataset(self.chips_file).to_table(
+            columns=["chip_id", "minx", "miny", "maxx", "maxy"],
+            filter=pc.field("chip_id").isin(ids))
+        found = table.column("chip_id").to_numpy()
+        if len(found) != len(ids):
+            raise Broken(f"{len(ids) - len(found)} scored chips have no square in the plan")
+        order = np.argsort(found)
+        where = order[np.searchsorted(found, ids, sorter=order)]
+        return np.column_stack([table.column(c).to_numpy()[where]
+                                for c in ("minx", "miny", "maxx", "maxy")])
 
 
 # ------------------------------------------------------------ is the period ready?
@@ -142,56 +199,104 @@ def inputs_summary(found: dict[int, dict]) -> dict:
 
 # ------------------------------------------------------------ layer 1: scores
 
-def read_scores(found: dict[int, dict]) -> pd.DataFrame:
-    """Every subregion's part files as one table, with the subregion as a column."""
-    frames = []
-    for n, f in found.items():
-        parts = sorted(f["folder"].glob("part_*.parquet"))
-        rows = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
-        if len(rows) != f["status"]["chips_saved"]:
-            raise Broken(f"subregion {n}'s part files hold {len(rows):,} chips but its "
-                         f"_status.json says {f['status']['chips_saved']:,}")
-        frames.append(rows.assign(subregion=np.int8(n)))
-    return pd.concat(frames, ignore_index=True)
+def place_scores(found: dict[int, dict], plan: Plan) -> tuple[dict[str, np.ndarray], dict]:
+    """Every chip's scores, in the plan's row order, from all subregions' part files.
 
+    Each planned chip has a fixed row (its place in plan.ids). The part files are read a
+    batch at a time and each value is put into its chip's row, so memory holds the
+    finished layer and one batch, never all part files at once.
+    """
+    n = len(plan.ids)
+    first = sorted(found[min(found)]["folder"].glob("part_*.parquet"))
+    names = pq.read_schema(first[0]).names if first else []
+    quality = [c for c in QUALITY if c in names]   # runs before 23 Oct have only three
+    cols = {"subregion": np.zeros(n, dtype=np.int8),
+            "scored": np.zeros(n, dtype=bool),
+            "confidence": np.full(n, np.nan, dtype=np.float64),
+            **{c: np.full(n, np.nan, dtype=np.float32) for c in VOTES + quality}}
+    values = ["confidence", *VOTES, *quality]
+    border = {"chips_scored_twice": 0, "copies_differ": 0, "largest_confidence_gap": 0.0}
 
-def scores_layer(scores: pd.DataFrame, plan_ids: np.ndarray, tiles: pd.DataFrame,
-                 failed_keys: set[str]) -> pd.DataFrame:
-    """One row per planned chip, in chip_id order; chips of failed tiles keep an empty row."""
-    if scores["chip_id"].duplicated().any():
-        # Open decision D7: a tile on a subregion border is scored under both
-        # subregions. AMW keeps the copy with the higher confidence (postprocess.py:146);
-        # not built yet, so stop instead of guessing.
-        n = int(scores["chip_id"].duplicated().sum())
-        raise Broken(f"{n:,} chips were scored twice (border tiles, open decision D7); "
-                     f"the step that resolves them isn't built yet")
-    if not scores["chip_id"].isin(plan_ids).all():
-        raise Broken("the part files hold chips that aren't in the plan")
+    for sub in sorted(found):                       # lowest subregion first
+        rows = 0
+        seen = np.zeros(n, dtype=bool)              # the chips this subregion has given so far
+        for part in sorted(found[sub]["folder"].glob("part_*.parquet")):
+            for batch in pq.ParquetFile(part).iter_batches(batch_size=BATCH_ROWS,
+                                                           columns=["chip_id", *values]):
+                chip_id = batch.column("chip_id").to_numpy()
+                row = np.searchsorted(plan.ids, chip_id)
+                if (row >= n).any() or (plan.ids[np.minimum(row, n - 1)] != chip_id).any():
+                    raise Broken(f"subregion {sub}'s part files hold chips that aren't "
+                                 f"in the plan")
+                if seen[row].any() or len(np.unique(row)) < len(row):
+                    raise Broken(f"a chip is saved twice in subregion {sub}'s part files")
+                seen[row] = True
+                new = {c: batch.column(c).to_numpy(zero_copy_only=False) for c in values}   # null -> NaN
 
-    # ADDITION (P1, a complete panel): AMW keeps only chips above 0.4. Every planned chip
-    # gets a row here, so "no data" can never be read as "no mine".
-    layer = pd.DataFrame({"chip_id": plan_ids}).merge(
-        scores, on="chip_id", how="left", validate="one_to_one", indicator=True)
-    layer["scored"] = layer.pop("_merge").eq("both")
+                # Open decision D7, now measured: a tile on a subregion border is scored
+                # once per subregion, under the same chip_ids. Same as AMW: keep the copy
+                # with the higher confidence (dedupe_detections, postprocess.py:146); on a
+                # tie, the lower subregion's. In aca_full_2026-10-23 the two copies are
+                # identical in every column (1 Nov), so the rule only matters if they ever
+                # differ; the record counts how often they do.
+                twice = cols["scored"][row]
+                if twice.any():
+                    old = np.column_stack([cols[c][row[twice]] for c in values]).astype(np.float64)
+                    now = np.column_stack([new[c][twice] for c in values]).astype(np.float64)
+                    same = (old == now) | (np.isnan(old) & np.isnan(now))
+                    border["chips_scored_twice"] += int(twice.sum())
+                    border["copies_differ"] += int((~same.all(axis=1)).sum())
+                    border["largest_confidence_gap"] = max(
+                        border["largest_confidence_gap"],
+                        float(np.abs(old[:, 0] - now[:, 0]).max()))
+                take = ~twice | (new["confidence"] > cols["confidence"][row])
+                for c in values:
+                    cols[c][row[take]] = new[c][take]
+                cols["subregion"][row[take]] = sub
+                cols["scored"][row] = True
+                rows += len(chip_id)
+        if rows != found[sub]["status"]["chips_saved"]:
+            raise Broken(f"subregion {sub}'s part files hold {rows:,} chips but its "
+                         f"_status.json says {found[sub]['status']['chips_saved']:,}")
 
     # A chip without a score must belong to a tile that failed every try; anything else
-    # means the part files and _status.json disagree.
-    unscored_tiles = set(np.unique(layer.loc[~layer["scored"], "chip_id"] // 1000).tolist())
-    failed_tiles = {tile_number(k) for k in failed_keys}
-    if unscored_tiles - failed_tiles:
-        raise Broken(f"{len(unscored_tiles - failed_tiles)} tile(s) have no scores but are "
-                     f"not listed as failed")
-    if not layer["scored"].all():                 # the subregion of an unscored chip
-        where = dict(zip(tiles["tile_key"].map(tile_number), tiles["subregion"]))
-        missing = ~layer["scored"]
-        layer.loc[missing, "subregion"] = (layer.loc[missing, "chip_id"] // 1000).map(where)
+    # means the part files and _status.json disagree. It keeps its row (P1), credited to
+    # its tile's subregion.
+    unscored = ~cols["scored"]
+    failed = {tile_number(k) for f in found.values() for k in f["status"]["tiles_failed"]}
+    if set(np.unique(plan.ids[unscored] // 1000).tolist()) - failed:
+        raise Broken("some tiles have no scores but are not listed as failed")
+    cols["subregion"][unscored] = plan.home[unscored]
+    return cols, border
 
-    # Runs scored before 23 Oct have only the first quality columns; their layer goes
-    # without the others.
-    quality = [c for c in QUALITY if c in layer.columns]
-    return layer.astype({"subregion": "int8", "confidence": "float64",
-                         **{c: "float32" for c in VOTES + quality}})[
-        ["chip_id", "subregion", "scored", "confidence", *VOTES, *quality]]
+
+def mark_lost_quality(cols: dict[str, np.ndarray]) -> dict:
+    """Quality values that masked pixels made wrong become missing; returns counts."""
+    # ADDITION: a pixel with no clear image of the period is masked by Earth Engine. Since
+    # detect.py asks for 32-bit pixels (22 Oct) such a pixel arrives as -inf, not 0, and
+    # detect.py took it for a seen pixel (fixed in detect.py, quality(), on 1 Nov). In
+    # every chip with such a pixel this left empty_share at 0, ndvi_mean and bsi_mean
+    # missing, and cirrus_mean and cs_clear_mean at -inf. The scores are not affected: the
+    # model's input is clipped to 0..1, so the pixel reaches it as 0, as in AMW. What
+    # can't be recovered becomes missing; nothing is guessed. On part files written after
+    # the fix there is no -inf, and this changes nothing.
+    if "cs_clear_mean" not in cols:                # runs before 23 Oct: no such columns
+        return {"chips_with_lost_quality_values": 0}
+    gaps = np.isneginf(cols["cs_clear_mean"])      # some, not all, pixels without a clear image
+    empty = cols["n_clear"] == 0                   # no clear image in any pixel of the chip
+    cols["empty_share"][gaps] = np.nan             # unknown: somewhere between 0 and 1
+    cols["empty_share"][empty] = 1.0               # known exactly
+    for c in ("cs_clear_mean", "ndvi_mean", "bsi_mean", "cirrus_mean"):
+        cols[c][~np.isfinite(cols[c])] = np.nan
+    return {"chips_with_lost_quality_values": int(gaps.sum()),
+            "chips_without_any_clear_image": int(empty.sum())}
+
+
+def scores_table(plan: Plan, cols: dict[str, np.ndarray]) -> pd.DataFrame:
+    """The scores layer as a table, without copying the arrays."""
+    order = ["subregion", "scored", "confidence", *VOTES,
+             *[c for c in QUALITY if c in cols]]
+    return pd.DataFrame({"chip_id": plan.ids, **{c: cols[c] for c in order}}, copy=False)
 
 
 # ------------------------------------------------------------ layer 2: postprocess
@@ -213,68 +318,80 @@ def kth_neighbor_km_geodesic(lon: np.ndarray, lat: np.ndarray, k: int) -> np.nda
     return out
 
 
-def postprocess_layer(layer: pd.DataFrame, chips: pd.DataFrame, cfg: Config) -> tuple[pd.DataFrame, dict]:
+def postprocess_layer(plan: Plan, scored: np.ndarray, conf: np.ndarray,
+                      cfg: Config) -> tuple[pd.DataFrame, dict]:
     """AMW's detection flags for every chip, with the distances they rest on, and counts."""
     th = cfg.thresholds
-    scored = layer["scored"].to_numpy()
-    conf = layer["confidence"].to_numpy(dtype=np.float64)    # NaN where not scored
-    out = pd.DataFrame({"chip_id": layer["chip_id"]})
+    n = len(plan.ids)
+    out = {"chip_id": plan.ids}
     counts = {}
 
-    def flag(values: np.ndarray) -> pd.Series:
+    def flag(values: np.ndarray) -> pd.arrays.BooleanArray:
         """True/False for scored chips, missing (<NA>) for chips without a score (P1)."""
-        return pd.Series(values, dtype="boolean").mask(~scored)
+        return pd.arrays.BooleanArray(values, ~scored)
 
     # Same as AMW: a raw detection is a mean score strictly above 0.4
     # (inference_engine.py:803), and an Andes detection strictly above 0.2 on the Andes
     # chips. DEVIATION from AMW: kept as flags on every chip, not as files of positives.
-    out["det_raw"] = flag(conf > th.raw)
-    out["det_andes"] = flag(chips["in_andes"].to_numpy() & (conf > th.andes))
+    out["det_raw"] = flag(scored & (conf > th.raw))
+    out["det_andes"] = flag(scored & plan.in_andes & (conf > th.andes))
 
-    centre_lon = ((chips["minx"] + chips["maxx"]) / 2).to_numpy()
-    centre_lat = ((chips["miny"] + chips["maxy"]) / 2).to_numpy()
+    # The chips any of the two catalogues can contain, and their squares from the plan.
+    low = min(th.loose.t_main, th.stringent.t_main)
+    candidates = np.flatnonzero(scored & (conf >= low))
+    squares = plan.squares(plan.ids[candidates])
+
     for name, pair in (("loose", th.loose), ("stringent", th.stringent)):
+        kth = np.full(n, np.nan)                   # ADDITION: the distances the flag rests
+        kth_geo = np.full(n, np.nan)               # on, so a better rule can be derived later
+        detected = np.zeros(n, dtype=bool)         # (open decisions D1, D3); empty outside
+        counts[name] = {"catalogue": 0, "twins_dropped": 0, "isolated": 0, "detected": 0}
+
         # Same as AMW: the neighbour catalogue is every chip at or above t_main, across all
         # subregions of the period (postprocess.py:362). AMW runs it on the raw detections
         # (> 0.4); t_main is above 0.4, so the catalogue is the same.
-        catalogue = scored & (conf >= pair.t_main)
-        out[f"kth_km_{name}"] = np.nan             # ADDITION: the distances the flag rests on,
-        out[f"kth_km_geo_{name}"] = np.nan         # so a better rule can be derived later
-                                                   # (open decisions D1, D3); empty outside
-                                                   # the catalogue
-        if not catalogue.any():                    # Same as AMW: nothing to filter
-            out[f"det_{name}"] = flag(np.zeros(len(out), dtype=bool))  # (postprocess.py:362)
-            counts[name] = {"catalogue": 0, "isolated": 0, "detected": 0}
-            continue
-        squares = gpd.GeoDataFrame(geometry=shapely.box(
-            chips.loc[catalogue, "minx"], chips.loc[catalogue, "miny"],
-            chips.loc[catalogue, "maxx"], chips.loc[catalogue, "maxy"]), crs="EPSG:4326")
-        kth = amw.kth_neighbor_km_on_catalog(amw.centroids_xy_m(squares),
-                                             k=th.neighbours_k)       # AMW: postprocess.py:365-366
-        keep = amw.keep_dual_threshold(conf[catalogue], kth, t_main=pair.t_main,
-                                       t_iso=pair.t_iso,
-                                       isolation_km=th.isolation_km)  # AMW: postprocess.py:369
-        detected = np.zeros(len(out), dtype=bool)
-        detected[catalogue] = keep
-        out[f"det_{name}"] = flag(detected)
-
-        out.loc[catalogue, f"kth_km_{name}"] = kth
-        out.loc[catalogue, f"kth_km_geo_{name}"] = kth_neighbor_km_geodesic(
-            centre_lon[catalogue], centre_lat[catalogue], th.neighbours_k)
-
-        isolated = ~(np.isfinite(kth) & (kth <= th.isolation_km))     # AMW's rule, incl. NaN
-        counts[name] = {"catalogue": int(catalogue.sum()),
-                        "isolated": int(isolated.sum()),
-                        "detected": int(keep.sum())}
+        mine = conf[candidates] >= pair.t_main
+        if mine.any():
+            box = squares[mine]
+            catalogue = gpd.GeoDataFrame(
+                {"confidence": conf[candidates[mine]]},
+                geometry=shapely.box(box[:, 0], box[:, 1], box[:, 2], box[:, 3]),
+                crs="EPSG:4326")
+            # Same as AMW: one chip per location before the neighbour search; where two
+            # chips share AMW's rounded centre, the higher score stays (dedupe_detections,
+            # postprocess.py:146). In aca_full_2026-10-23 that happens only on the UTM zone
+            # seam at 60°W: 368 chip pairs of subregion 2 (open decision D5). Both chips
+            # keep their rows; the one dropped gets no distance and det = False.
+            kept = amw.dedupe_detections(catalogue, verbose=False)
+            rows = candidates[mine][kept.index.to_numpy()]
+            dist = amw.kth_neighbor_km_on_catalog(amw.centroids_xy_m(kept),
+                                                  k=th.neighbours_k)   # AMW: postprocess.py:365-366
+            keep = amw.keep_dual_threshold(conf[rows], dist, t_main=pair.t_main,
+                                           t_iso=pair.t_iso,
+                                           isolation_km=th.isolation_km)  # AMW: postprocess.py:369
+            detected[rows] = keep
+            kth[rows] = dist
+            b = box[kept.index.to_numpy()]
+            kth_geo[rows] = kth_neighbor_km_geodesic((b[:, 0] + b[:, 2]) / 2,
+                                                     (b[:, 1] + b[:, 3]) / 2, th.neighbours_k)
+            isolated = ~(np.isfinite(dist) & (dist <= th.isolation_km))   # AMW's rule, incl. NaN
+            counts[name] = {"catalogue": len(rows), "twins_dropped": int(mine.sum()) - len(rows),
+                            "isolated": int(isolated.sum()), "detected": int(keep.sum())}
+        out[f"kth_km_{name}"] = kth
+        out[f"kth_km_geo_{name}"] = kth_geo
+        out[f"det_{name}"] = flag(detected)        # Same as AMW: nothing in the catalogue,
+                                                   # nothing detected (postprocess.py:362)
     counts["raw"] = int(out["det_raw"].sum())
     counts["andes"] = int(out["det_andes"].sum())
-    return out, counts
+    order = ["chip_id", "det_raw", "det_andes", "kth_km_loose", "kth_km_geo_loose", "det_loose",
+             "kth_km_stringent", "kth_km_geo_stringent", "det_stringent"]
+    return pd.DataFrame({c: out[c] for c in order}, copy=False), counts
 
 
 # ------------------------------------------------------------ writing
 
-def layer_folder(run_dir: Path, frequency: str, layer: str, period: Period) -> Path:
-    return run_dir / "panel" / frequency / layer / f"period={period.tag}"
+def layer_folder(panel_dir: Path, frequency: str, layer: str, period: Period) -> Path:
+    return panel_dir / frequency / layer / f"period={period.tag}"
 
 
 def write_layer(folder: Path, table: pd.DataFrame, record: dict, lock: FolderLock) -> None:
@@ -289,65 +406,81 @@ def write_layer(folder: Path, table: pd.DataFrame, record: dict, lock: FolderLoc
     os.replace(tmp, folder / "_record.json")      # the record last: it means "complete"
 
 
-def assemble(cfg: Config, run_dir: Path, frequency: str, period: Period,
-             subregions: list[int], tiles: pd.DataFrame, chips: pd.DataFrame,
-             allow_failed: bool) -> str:
+def assemble(cfg: Config, run_dir: Path, panel_dir: Path, frequency: str, period: Period,
+             plan: Plan, others: list[int], allow_failed: bool) -> str:
     """Assemble one period's missing layers. Returns a line for the log."""
-    found = detect_inputs(run_dir, frequency, period, subregions, allow_failed)
+    found = detect_inputs(run_dir, frequency, period, plan.subregions, allow_failed)
     inputs = inputs_summary(found)
     # One writer per period: its lock lives in the first layer's folder (lock.py).
-    with FolderLock(layer_folder(run_dir, frequency, "scores", period)) as lock:
-        return assemble_locked(cfg, run_dir, frequency, period, found, inputs, tiles,
-                               chips, lock)
+    with FolderLock(layer_folder(panel_dir, frequency, "scores", period)) as lock:
+        return assemble_locked(cfg, panel_dir, frequency, period, found, inputs, plan,
+                               others, lock)
 
 
-def assemble_locked(cfg: Config, run_dir: Path, frequency: str, period: Period,
-                    found: dict[int, dict], inputs: dict, tiles: pd.DataFrame,
-                    chips: pd.DataFrame, lock: FolderLock) -> str:
+def assemble_locked(cfg: Config, panel_dir: Path, frequency: str, period: Period,
+                    found: dict[int, dict], inputs: dict, plan: Plan, others: list[int],
+                    lock: FolderLock) -> str:
     """The rest of assemble(), while holding the period's lock."""
     todo = []
     for name in LAYERS:
-        record = layer_folder(run_dir, frequency, name, period) / "_record.json"
+        record = layer_folder(panel_dir, frequency, name, period) / "_record.json"
         if not record.exists():
             todo.append(name)
         elif json.loads(record.read_text())["inputs"] != inputs:
             raise NotReady(f"detect's output changed after the {name} layer was written. "
                            f"The panel is never overwritten: move "
-                           f"panel/{frequency}/*/period={period.tag} aside by hand first")
+                           f"{panel_dir.name}/{frequency}/*/period={period.tag} aside by hand first")
     if not todo:
         return f"{period.tag}  already assembled"
 
-    failed_keys = {k for f in found.values() for k in f["status"]["tiles_failed"]}
-    scores = scores_layer(read_scores(found), chips["chip_id"].to_numpy(), tiles, failed_keys)
-    flags, counts = postprocess_layer(scores, chips, cfg)
-
+    failed_keys = sorted({k for f in found.values() for k in f["status"]["tiles_failed"]})
     about = {"frequency": frequency, "period": period.tag, "assembled_utc": utc_now(),
-             "inputs": inputs,
+             "subregions": plan.subregions, "inputs": inputs,
              "model_members": next(iter(found.values()))["status"]["model_members"],
-             "rows": len(scores), "scored": int(scores["scored"].sum()),
-             "tiles_failed": sorted(failed_keys)} | environment(cfg)
-    records = {
-        "scores": about | {"layer": "scores", "columns": list(scores.columns),
-                           "mean_n_clear": float(scores["n_clear"].mean()),
-                           "share_n_clear_below_1": float((scores["n_clear"] < 1).mean())},
-        "postprocess": about | {"layer": "postprocess", "columns": list(flags.columns),
-                                "thresholds": {"raw": cfg.thresholds.raw,
-                                               "andes": cfg.thresholds.andes,
-                                               "loose": asdict(cfg.thresholds.loose),
-                                               "stringent": asdict(cfg.thresholds.stringent),
-                                               "neighbours_k": cfg.thresholds.neighbours_k,
-                                               "isolation_km": cfg.thresholds.isolation_km},
-                                "counts": counts},
-    }
-    tables = {"scores": scores, "postprocess": flags}
-    for name in todo:
-        write_layer(layer_folder(run_dir, frequency, name, period), tables[name],
-                    records[name], lock)
-    return (f"{period.tag}  {len(scores):,} chips, {records['scores']['scored']:,} scored, "
-            f"{len(failed_keys)} failed tiles; detected raw {counts['raw']:,}, "
-            f"loose {counts['loose']['detected']:,}, stringent "
-            f"{counts['stringent']['detected']:,}, Andes {counts['andes']:,}; "
-            f"wrote {', '.join(todo)}")
+             "rows": len(plan.ids), "tiles_failed": failed_keys} | environment(cfg)
+    if others:                                    # a panel of part of the region
+        about["note"] = (f"Only subregions {plan.subregions}: neighbours in subregions "
+                         f"{others} are missing, so the isolation flags of chips near "
+                         f"those borders can differ from the whole region's panel.")
+    scores_path = layer_folder(panel_dir, frequency, "scores", period) / "data.parquet"
+    line = []
+
+    if "scores" in todo:
+        cols, border = place_scores(found, plan)
+        lost = mark_lost_quality(cols)
+        table = scores_table(plan, cols)
+        record = about | {"layer": "scores", "columns": list(table.columns),
+                          "scored": int(cols["scored"].sum()),
+                          "border": {"tiles": plan.border_tiles, **border},
+                          "masked_pixels": lost,
+                          "mean_n_clear": float(np.nanmean(cols["n_clear"])),
+                          "share_n_clear_below_1": float((cols["n_clear"] < 1).mean())}
+        write_layer(scores_path.parent, table, record, lock)
+        del cols, table                           # free the big arrays before layer 2
+        line.append(f"{record['scored']:,} of {len(plan.ids):,} chips scored, "
+                    f"{border['chips_scored_twice']:,} border chips "
+                    f"({border['copies_differ']:,} copies differ)")
+
+    if "postprocess" in todo:
+        # Layer 2 is computed from layer 1 as written, never from anything else.
+        s = pq.read_table(scores_path, columns=["chip_id", "scored", "confidence"])
+        if not np.array_equal(s.column("chip_id").to_numpy(), plan.ids):
+            raise Broken("the scores layer's rows don't match the plan")
+        flags, counts = postprocess_layer(plan, s.column("scored").to_numpy(),
+                                          s.column("confidence").to_numpy(), cfg)
+        th = cfg.thresholds
+        record = about | {"layer": "postprocess", "columns": list(flags.columns),
+                          "thresholds": {"raw": th.raw, "andes": th.andes,
+                                         "loose": asdict(th.loose),
+                                         "stringent": asdict(th.stringent),
+                                         "neighbours_k": th.neighbours_k,
+                                         "isolation_km": th.isolation_km},
+                          "counts": counts}
+        write_layer(layer_folder(panel_dir, frequency, "postprocess", period), flags,
+                    record, lock)
+        line.append(f"detected raw {counts['raw']:,}, loose {counts['loose']['detected']:,}, "
+                    f"stringent {counts['stringent']['detected']:,}, Andes {counts['andes']:,}")
+    return f"{period.tag}  " + "; ".join(line) + f"; wrote {', '.join(todo)}"
 
 
 if __name__ == "__main__":
@@ -355,6 +488,8 @@ if __name__ == "__main__":
                                              "part files.")
     ap.add_argument("--run", required=True, help="the run folder made by plan.py")
     ap.add_argument("--frequency", required=True, choices=("monthly", "quarterly"))
+    ap.add_argument("--subregions", type=int, nargs="+",
+                    help="only these subregions, e.g. --subregions 2 3 (default: all)")
     ap.add_argument("--from", dest="first", help="first period, e.g. 2018-01 or 2018Q1")
     ap.add_argument("--to", dest="last", help="last period")
     ap.add_argument("--allow-failed", action="store_true",
@@ -374,15 +509,22 @@ if __name__ == "__main__":
     periods = pick_periods(cfg, args.frequency, args.first, args.last)
 
     tiles = pd.read_csv(run_dir / "plan" / "tiles.csv")
-    subregions = sorted(tiles["subregion"].unique().tolist())   # those with tiles
-    chips = pd.read_parquet(run_dir / "plan" / "chips.parquet",
-                            columns=["chip_id", "minx", "miny", "maxx", "maxy", "in_andes"])
+    planned = sorted(tiles["subregion"].unique().tolist())   # those with tiles
+    chosen = sorted(set(args.subregions or planned))
+    if set(chosen) - set(planned):
+        raise SystemExit(f"ASSEMBLE ERROR: the plan has no tiles in subregion(s) "
+                         f"{sorted(set(chosen) - set(planned))}; it has {planned}")
+    others = [n for n in planned if n not in chosen]
+    panel_dir = run_dir / panel_name(chosen if others else None)
+    print(f"reading the plan: subregions {chosen} -> {panel_dir.name}/{args.frequency}/",
+          flush=True)
+    plan = Plan(run_dir, tiles, chosen)
 
     waiting: dict[str, list[str]] = {}            # reason -> the periods it holds back
     broken = []
     for period in periods:
         try:
-            print(assemble(cfg, run_dir, args.frequency, period, subregions, tiles, chips,
+            print(assemble(cfg, run_dir, panel_dir, args.frequency, period, plan, others,
                            args.allow_failed), flush=True)
         except (NotReady, Locked) as why:
             waiting.setdefault(str(why), []).append(period.tag)

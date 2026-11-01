@@ -18,7 +18,7 @@ Contents
   - [A4. detect.py](#a4-detectpy-the-scoring)
   - [A5. status.py](#a5-statuspy-how-far-is-the-run)
   - [A6. Reading the output](#a6-reading-the-output)
-  - [A7. Assembly](#a7-assembly-next-step)
+  - [A7. Assembly](#a7-assembly-one-period-across-subregions)
 - [Part B: on Goethe](#part-b-on-the-goethe-cluster)
   - [B1. What is different](#b1-what-is-different)
   - [B2. One-time setup](#b2-one-time-setup)
@@ -44,6 +44,7 @@ panel_pipeline/
     config.py periods.py grid.py lock.py provenance.py read_panel.py
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
+    check_panel.py  panel_overview.ipynb   checks of an assembled panel, and a notebook to show it (A7)
     explore_runs.ipynb  bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
   docs/                   everything written down about the pipeline; start at docs/README.md
     README.md                   which document answers what
@@ -302,6 +303,15 @@ month's `n_obs` and `n_clear` add up exactly to its quarter's (measured, `docs/f
 §1); the other columns do not (averages, and each period counts its days from its own start).
 Runs scored before 23 Oct have only `n_obs`, `n_clear` and `empty_share`.
 
+**Tasks scored between 22 Oct and 1 Nov** (all of `aca_full_2026-10-23` so far): a pixel
+with no clear image arrived as `-inf` and detect.py took it for a seen pixel. In every chip
+with such a pixel, `empty_share` stayed 0, `ndvi_mean` and `bsi_mean` are missing, and
+`cs_clear_mean` and `cirrus_mean` are `-inf` (22–80% of chips in the months, 1–22% in the
+quarters; `docs/findings.md` §8). The scores, votes, `n_obs`, `n_clear`, `n_clear_median`,
+`thin_share`, `clear_day_mean` and `cs_mean` are right. `assemble_period.py` turns the wrong
+values into missing ones (and sets `empty_share` to 1 where `n_clear` is 0, which is exact);
+detect.py is fixed from 1 Nov on.
+
 #### Reading it in Python (laptop or Goethe, the same code)
 
 detect's output, every period of one frequency (only the columns you need, to save memory):
@@ -328,6 +338,8 @@ q = read_panel(run, "quarterly")                      # scores + postprocess, ev
 q = read_panel(run, "quarterly", periods=["2026Q1"],
                columns={"scores": ["confidence", "n_clear", "empty_share", "clear_day_mean"],
                         "postprocess": ["det_raw"]})
+q = read_panel(run, "quarterly", periods=["2025Q2"], subregions=[2, 3],
+               columns={"postprocess": ["det_stringent"]})   # a panel assembled with --subregions
 ```
 
 `panel_pipeline/checks/explore_runs.ipynb` does this with maps and a monthly ↔ quarterly check.
@@ -335,13 +347,58 @@ Reading a whole period of the full Amazon this way needs ~18 GB of memory; on a 
 read one `period=` folder, or a few columns. On Goethe, anything bigger than a test area
 is read inside a job (B6), not on the login node.
 
-### A7. Assembly (next step)
+### A7. Assembly: one period across subregions
 
-`assemble_period.py` (first version, tested on the two small test runs) takes one (frequency,
-period), refuses unless every subregion's task is complete, and writes one file per
-period with every planned chip: AMW's detection flags, the isolation distance, and
-`scored = False` rows for failed tiles. Nothing is ever deleted (Rmd P1, P2, D11).
-What is decided and what is open is in `docs/open_design_decisions.Rmd`.
+```bash
+python panel_pipeline/assemble_period.py --run tests_output/<run> --frequency quarterly
+python panel_pipeline/assemble_period.py --run tests_output/<run> --frequency monthly --subregions 2 3
+```
+
+It assembles every period that is ready and lists why the others aren't (a subregion not
+scored yet, a task still running, failed tiles). For each period it writes two layers,
+each with every planned chip once, sorted by `chip_id`, so the rows of all layers and
+periods line up:
+
+| Layer | Columns |
+|---|---|
+| `scores` | `subregion`, `scored`, `confidence`, `vote_1..6`, the quality columns of A6 |
+| `postprocess` | AMW's flags `det_raw`, `det_andes`, `det_loose`, `det_stringent`, and the distances they rest on: `kth_km_loose`, `kth_km_stringent` (AMW's), `kth_km_geo_loose`, `kth_km_geo_stringent` (on the Earth itself, Rmd D3) |
+
+- **Border tiles** are scored in both subregions under the same `chip_id`. The panel keeps
+  one row, by AMW's rule: the copy with the higher confidence (on a tie, the lower
+  subregion). `_record.json` counts the copies that differed; in `aca_full_2026-10-23`
+  none did (Rmd D7).
+- **Failed tiles** stop the period unless `--allow-failed` is given; then their chips get a
+  row with `scored = False`, empty values and missing flags, never 0 (Rmd P1).
+- **`--subregions 2 3`** writes to `<run>/panel_subregions_2_3/`, never into `panel/`. Its
+  neighbour distances can't see the chips of the other subregions, so chips near those
+  borders can look more isolated than they are (Rmd D2); the record says so.
+- Nothing written is ever changed. Running the command again skips what exists and
+  assembles what became ready.
+- *Measured* on a test of 10.5 M chips: 40 s and 2 GB of memory per period. *Estimate* for
+  subregions 2 and 3 (46.4 M chips): 3 min and 8 GB; for all of Amazon_ACA: 25 GB. On
+  Goethe, run it inside a job (B6).
+
+Then check it, and look at it:
+
+```bash
+python panel_pipeline/checks/check_panel.py --run tests_output/<run> --subregions 2 3
+```
+
+`check_panel.py` runs eight simple checks on every assembled period (the list is at the top
+of the script): every chip once and in order, a score for every chip outside failed tiles,
+confidence equal to the mean of the votes, values in range, AMW's flags consistent, a
+distance exactly for the chips in each catalogue, identical border copies, and each
+quarter's image counts equal to its months'. It prints one line per check and ends with
+`all checks passed` or the failing rows.
+
+`checks/panel_overview.ipynb` is the notebook to show: set `RUN` and `SUBREGIONS` in its first
+cell, then run all cells. It runs the checks, then shows detections per period, how well
+each period was seen, detections by `n_clear`, months against their quarter, a map, AMW's
+distance against the geodesic one, and a few chips through time.
+
+What is decided and what is open is in `docs/open_design_decisions.Rmd`; `build_panel.py`
+(across time, the persistence flag) comes next (Rmd D8).
 
 ---
 
@@ -491,7 +548,7 @@ rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/detect/quarte
           tests_output/<run>/detect/quarterly/
 rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/detect/quarterly/period=2026Q1/ \
           tests_output/<run>/detect/quarterly/period=2026Q1/
-# the assembled panel, plus the plan (chip squares, for maps)
+# the assembled panel, plus the plan (chip squares, for maps); panel_subregions_2_3 likewise
 rsync -av <user>@goethe.hhlr-gu.de:/work/<group>/<user>/runs/<run>/{panel,plan,run} tests_output/<run>/
 ```
 

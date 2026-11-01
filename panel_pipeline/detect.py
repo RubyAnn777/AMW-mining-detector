@@ -90,8 +90,10 @@ def quality_bands(s2, start_date: str, clear_threshold: float):
     # sum of the clear images' days (clear_day_sum: day 0 is the period's first day), and
     # the sums of Cloud Score+ cs_cdf (1 clear, 0 cloudy) over all images (cs_sum) and over
     # the clear ones (cs_clear_sum). The sums become averages per chip (score_tile). Same
-    # collections, dates and test as gee.py:208-229. A pixel with no image is masked and
-    # arrives as 0; so does one with no clear image, in the bands of clear images.
+    # collections, dates and test as gee.py:208-229. A pixel with no image is masked; so is
+    # one with no clear image, in the bands of clear images. Masked pixels arrive as -inf
+    # in 32-bit bands (they arrived as 0 in AMW's 64-bit median); quality() counts both
+    # as "nothing there".
     start = ee.Date(start_date)
     scores = s2.linkCollection(ee.ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED"),
                                ["cs_cdf"]).select("cs_cdf")
@@ -196,6 +198,14 @@ def quality(spectral: np.ndarray, extra: np.ndarray, bounds, stride: int) -> dic
     # by the images summed the same way, so a pixel with more images weighs more and an
     # empty one not at all. The three indices are averaged over the pixels with data;
     # "empty" = no clear image: 0 in every band, which the model sees as black.
+    # A masked pixel arrives as -inf in our 32-bit request (99cfcd0, 22 Oct), where AMW's
+    # 64-bit one arrived as 0. Until 1 Nov this took it for a seen pixel: empty_share
+    # stayed 0, ndvi_mean and bsi_mean went missing and cirrus_mean and cs_clear_mean to
+    # -inf in every chip with such a pixel (22-80% of chips in the months of 2025,
+    # aca_full_2026-10-23; docs/findings.md). The scores never saw it: score_tile clips
+    # the model's input to 0..1, so -inf reaches the model as 0, as in AMW.
+    spectral = np.where(np.isfinite(spectral), spectral, 0)
+    extra = np.where(np.isfinite(extra), extra, 0)
     n_obs, n_clear, day_sum, cs_sum, cs_clear_sum = np.moveaxis(extra, -1, 0)
     band = {name: spectral[..., SPECTRAL.index(name)] for name in ("B2", "B4", "B8", "B10", "B11")}
     seen = ~(spectral == 0).all(axis=-1)
