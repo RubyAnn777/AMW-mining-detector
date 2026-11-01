@@ -1,74 +1,407 @@
 <!-- PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; upstream original: earthrise-media/mining-detector -->
-# AMW Mining Detector — Research Fork
+# AMW Mining Detector: research fork
 
-Fork of [earthrise-media/mining-detector](https://github.com/earthrise-media/mining-detector) (Amazon Mining Watch, AMW).
+This is a fork of [earthrise-media/mining-detector](https://github.com/earthrise-media/mining-detector)
+(Amazon Mining Watch, "AMW"). We use AMW's model to score every small square of the
+Amazon ("chip") for gold mining, **month by month and quarter by quarter from 2018**, and
+save the scores as a **panel**: one row per chip and period, with quality columns next to
+each score. Nothing is published to a website.
 
-**Our pipeline lives in `panel_pipeline/`.** How to run it on a laptop and on the Goethe cluster: [`panel_pipeline/README.md`](panel_pipeline/README.md). The rest of this file describes the fork's layout and the earlier `timeseries/` pilot, which the panel pipeline does not use.
+This page is the short, step-by-step guide to running it. Every option and every
+output column is explained in the full reference,
+[`panel_pipeline/README.md`](panel_pipeline/README.md).
 
-**Project goal:** build a more granular (monthly/quarterly) time series of artisanal gold mining, piloted on the La Pampa corridor in Madre de Dios, Peru, then scale up.
+Contents
 
-**Model in use:** `models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5` — upstream's CNN ensemble (six member CNNs: v4.10b, 18d, 20g, 21a, 22b, 22c; the member `.h5` files are in `_archive/models/`, NOT in `models/`). Operating-threshold configs ship alongside (`_config-t0.4.txt`, `_config-t0.43.txt`). It runs directly on Sentinel-2 chips (`embedding_strategy='none'`) — **no SSL4EO backbone download is required**. The earlier SSL4EO+MLP path (phase 1) is archived.
-
-**Last upstream sync:** 2026-09-18 — merge `641da68` of upstream `4797004` (August-2026 persistence rebuild). Sync procedure: `docs/GIT_PLAYBOOK.md`.
-
-## Layout
-
-```
-core/            Upstream pipeline, inference + eval only (training/embedding
-                 notebooks archived). Files present are byte-identical to
-                 upstream — do not edit
-  inference_engine.py     GEE data extraction + inference engine + configs
-  inference_pipeline.py   CLI for large-scale inference
-  inference.ipynb         Interactive inference on a small area
-  postprocess.py          Threshold + aggregate chip detections to polygons
-timeseries/      FORK — the time-series pilot (start here; see timeseries/README.md)
-time_tiles.py    FORK — per-tile timing benchmark for cost extrapolation
-docs/            FORK — CODE_WALKTHROUGH, DECISION_REGISTER, GIT_PLAYBOOK,
-                 OPTIMIZATIONS, LECTURE, PROVENANCE (generated)
-models/          ONLY the CNN ensemble in use + its two configs — every other
-                 upstream model is archived (none are loaded at runtime)
-data/            boundaries/ (la_pampa_corridor, madre_de_dios_mining_aoi, …),
-                 timeseries/ (panels, detections, analysis), upstream data
-scripts/ utils/  Small utilities (upstream; some carry fork annotations)
-_archive/        Gitignored. Everything unused by this project, mirroring the
-                 original layout. Upstream's README: _archive/README_upstream.md
-                 The deletion ledger: _archive/ARCHIVED_PATHS.txt (generated)
-```
-
-## Provenance convention
-
-Every fork-created or fork-modified code/doc file carries a first-line tag:
-
-```
-# PROVENANCE: FORK-ORIGINAL — fork-only file (RA timeseries project); …
-# PROVENANCE: FORK-MODIFIED — upstream file modified in this fork; …
-```
-
-Untagged files are upstream's, kept byte-identical. The full per-file manifest
-(including untaggable data files) is `docs/PROVENANCE.md` — regenerate after
-every upstream sync with `python scripts/provenance_report.py`.
-
-## Setup
-
-1. Build the environment — see `docs/RUNBOOK.md` §2. Short version: the venv lives at
-   `~/venvs/amw` (**not** in the repo), Python **3.11 only**, then
-   `python -m pip install -r requirements-lock_2026-07-17.txt`. Activate with
-   `source ~/venvs/amw/bin/activate`.
-2. GEE auth (Google Cloud project with Earth Engine enabled):
-   ```bash
-   gcloud auth login && gcloud auth application-default login
-   export EE_PROJECT=YOUR_PROJECT_ID
-   ```
-3. No model download needed — the CNN ensemble is tracked in the repo.
-
-## Run
-
-- **Time-series pilot** (smoke test → overnight run): `timeseries/README.md`
-- **Timing benchmark:** `python time_tiles.py --model models/48px_v4.10b-18d-20g-21a-22bc-ensemble.h5 --region data/boundaries/test_region.geojson …` (full example in the file header)
-- **Upstream-style inference on any AOI:** `core/inference_pipeline.py` (CLI) or `core/inference.ipynb` (interactive)
-- **Upstream sync:** `bash scripts/sync_upstream.sh` — auto-resolves archived-file conflicts, leaves real ones for review; afterwards run `python scripts/provenance_report.py` (details: `docs/GIT_PLAYBOOK.md`)
+1. [The flow in one picture](#1-the-flow-in-one-picture)
+2. [Words used on this page](#2-words-used-on-this-page)
+3. [How to read a command](#3-how-to-read-a-command)
+4. [A run on the Goethe cluster, step by step](#4-a-run-on-the-goethe-cluster-step-by-step)
+5. [The same on a laptop](#5-the-same-on-a-laptop)
+6. [All commands on one page](#6-all-commands-on-one-page)
+7. [When something goes wrong](#7-when-something-goes-wrong)
+8. [What is where in this repository](#8-what-is-where-in-this-repository)
 
 ---
 
-*Upstream's own README (August 2026 rebuild, persistence, data products) is at
-[github.com/earthrise-media/mining-detector#readme](https://github.com/earthrise-media/mining-detector#readme).*
+## 1. The flow in one picture
+
+```
+ a config file        plan.py            status.py --todo      detect.py (many times)      assemble_period.py
+ (the settings)  ──►  (once per run)  ──►  (the task list)  ──►  (the scoring, in a     ──►  (one tidy file
+                                                                 Slurm job)                  per period)
+                                              ▲                        │
+                                              └── status.py: how far? ─┘
+```
+
+In words:
+
+1. **Config.** You write down every setting of the run in one YAML file.
+2. **Plan.** `plan.py` reads it once, makes the run's folder, freezes a copy of the
+   settings there, and lists every tile and chip that will be scored. No Earth Engine yet.
+3. **Task list.** `status.py --todo` writes one `detect.py` command per (period,
+   subregion) that still has to be done.
+4. **Detect.** Each `detect.py` command downloads the satellite pictures for its tiles
+   from Earth Engine, runs AMW's model on them, and saves the scores every few minutes.
+   On the cluster, a job script works through the task list, several tasks at a time.
+5. **Status.** At any time, `status.py` shows what is done, running, or broken.
+6. **Assemble.** When every subregion of a period is done, `assemble_period.py` joins
+   them into one file per period, with AMW's detection flags added. This is the panel.
+
+---
+
+## 2. Words used on this page
+
+| Word | Meaning |
+|---|---|
+| **run** | Everything made from one config: one folder, one model, one list of chips. The whole Amazon is one run. |
+| **period** | One month (`2024-07`) or one quarter (`2024Q3`). |
+| **frequency** | `monthly` or `quarterly`. The two are kept apart: separate folders, separate panels. |
+| **subregion** | One of AMW's six pieces of the Amazon, numbered 1 to 6. |
+| **tile** | A square about 5.8 km wide. One Earth Engine download per tile and period. |
+| **chip** | A 48 × 48 pixel square (480 m) inside a tile. The model scores chips. One panel row = one chip in one period. |
+| **task** | One `detect.py` command for one period and one subregion. It writes one folder. Tasks don't depend on each other, so they can run in any order. |
+| **login node** | The Goethe computer you land on after `ssh`. Shared by everyone: only for small things (git, checks, `status.py`). |
+| **job** | Work you hand to the cluster's scheduler (Slurm). It runs on a **compute node**, a whole 40-core computer, even when you log out. |
+
+---
+
+## 3. How to read a command
+
+```bash
+python panel_pipeline/detect.py --run /work/goldmine/me/runs/aca --frequency quarterly --subregion 2
+#      └─ the script to run ──┘  └──── options: --name value, --name value, ... ────────────────┘
+```
+
+- `python <file>.py` runs that Python file. Always run commands **from the repository
+  folder** (`~/AMW-mining-detector`), because the paths start there.
+- Everything after it are **options** (also called flags or arguments). Each is
+  `--name value`. Some take no value and work like a switch (`--todo`).
+  The order of the options does not matter.
+- Every script explains its own options: add `--help`, for example
+  `python panel_pipeline/detect.py --help`.
+- A `\` at the end of a line means "the command continues on the next line".
+- `#` starts a comment: the shell ignores the rest of the line.
+- `> file.txt` saves what a command prints into a file instead of the screen.
+- `$RUN` is a **shell variable**: after `RUN=/some/path`, typing `$RUN` is the same as
+  typing `/some/path`. It is forgotten when the terminal closes.
+
+---
+
+## 4. A run on the Goethe cluster, step by step
+
+One-time setup (account, SSH key, Python environment, Earth Engine key) is in
+[`panel_pipeline/README.md` B2](panel_pipeline/README.md#b2-one-time-setup). The steps
+below assume it is done.
+
+### Step 0. Every time you log in
+
+```bash
+ssh <user>@goethe.hhlr-gu.de              # from your laptop's terminal
+cd ~/AMW-mining-detector                  # the repository
+source cluster/goethe_env.sh              # turns on the Python environment, the Earth Engine key, thread limits
+RUN=/work/goldmine/<user>/runs/<run>      # $RUN now means your run's folder
+squeue --me                               # which of your jobs are running (an empty list is an answer too)
+```
+
+`source cluster/goethe_env.sh` is the important one: without it, `python` is the wrong
+Python and Earth Engine doesn't know who you are. The prompt shows `(amw-panel)` when
+it worked.
+
+### Step 1. Make a config
+
+```bash
+cp panel_pipeline/config.yaml configs/<run>.yaml      # copy the template
+nano configs/<run>.yaml                               # edit it (any editor)
+python panel_pipeline/lib/config.py --config configs/<run>.yaml   # check it
+```
+
+What to change in the copy:
+
+| Setting | What to put |
+|---|---|
+| `run.name` | The run's name, also its folder name. Letters, digits, `-`, `_`. Convention: `<area>_<YYYY-MM-DD>`, for example `aca_full_2026-10-23`. |
+| `run.output_root` | Where run folders go. On Goethe: `/work/goldmine/<user>/runs`. On a laptop: `tests_output`. |
+| `periods.first_month`, `periods.last_month` | The first and last month to score, like `2018-01` and `2026-09`. For quarters, these must cover whole quarters. |
+| `periods.frequencies` | `[monthly, quarterly]`, or just one of them. |
+| `region.clip_to` | `null` for the whole Amazon, or a GeoJSON file (like `data/boundaries/test_region.geojson`) to score only a small test area. |
+| `imagery.max_workers` | How many downloads one task runs at once. On the cluster you set this per job instead (step 5). |
+
+Leave the rest as it is (model, thresholds, AMW's imagery settings) unless you mean to
+change the method. The check command prints a summary and `config OK`, or a
+`CONFIG ERROR` that names the problem (typo, missing setting, wrong value).
+
+**Commit the config** (`git add configs/<run>.yaml && git commit -m "config for <run>"`)
+before planning, so the run records exactly which code and settings made it. Example
+configs: `configs/aca_full_2026-10-23.yaml` (whole Amazon), `configs/test_region_2026-10-19.yaml`
+(small test).
+
+### Step 2. Plan the run (once)
+
+A small test area plans in seconds on the login node:
+
+```bash
+python panel_pipeline/plan.py --config configs/<run>.yaml
+```
+
+The whole Amazon takes 2 to 3 hours, so do it inside a job instead:
+
+```bash
+salloc --partition=general1 --nodes=1 --time=4:00:00 --mem=0   # ask for a compute node and wait for it
+srun python panel_pipeline/plan.py --config configs/<run>.yaml # run plan.py on that node
+exit                                                           # give the node back
+```
+
+`salloc` asks Slurm for a node and waits until you get it; `srun` runs the command on
+that node; `exit` ends the allocation. `plan.py` prints how many tiles and chips the run
+has, and `planned -> <folder>` at the end.
+
+Good to know:
+
+- A run is planned **once**. Planning the same `run.name` again stops with
+  `PLAN ERROR: ... already exists`. A different setting means a new run with a new name.
+- `plan.py` saves a copy of the config inside the run (`$RUN/run/config.yaml`). Every
+  later command reads **that copy**, so editing `configs/<run>.yaml` afterwards changes
+  nothing.
+- A `WARNING ... differ from the last commit` means you forgot to commit (step 1).
+
+### Step 3. Make the task list
+
+```bash
+python panel_pipeline/status.py --run $RUN --todo > $RUN/tasks.txt
+head -3 $RUN/tasks.txt            # look at the first three lines
+wc -l $RUN/tasks.txt              # how many tasks
+```
+
+Each line is one complete `detect.py` command, for example:
+
+```
+python panel_pipeline/detect.py --run /work/goldmine/me/runs/aca --frequency monthly --subregion 1 --from 2018-01 --to 2018-01
+```
+
+The list is in **period order** (2018-01 subregions 1 to 6, then 2018-02, ...), and it
+leaves out tasks that are already done or running. Add `--frequency quarterly` to list
+only quarterly tasks (or `monthly`). To score only some periods first, cut the file
+down, for example `grep "2024Q" $RUN/tasks.txt > $RUN/tasks_2024.txt`.
+
+### Step 4. Test one task by hand
+
+Before leaving the cluster alone for days, watch one task run for a few minutes:
+
+```bash
+salloc --partition=test --nodes=1 --time=1:55:00 --mem=0
+srun python panel_pipeline/detect.py --run $RUN --frequency quarterly --subregion 6 \
+     --from 2024Q3 --to 2024Q3 --workers 20 --limit 200
+exit
+```
+
+The `detect.py` options you will actually use:
+
+| Option | Meaning |
+|---|---|
+| `--run` | the run folder (required) |
+| `--frequency` | `monthly` or `quarterly` (required) |
+| `--subregion` | 1 to 6 (required) |
+| `--from`, `--to` | first and last period, like `2024Q3`. `--from X --to X` is exactly one task. Leave both out to do every period of the run. |
+| `--workers` | downloads at once in this task. The main speed setting (see step 5). |
+| `--limit` | score only the first N tiles: a test. The task then shows as "partly done" and the real run finishes it. |
+
+The rest (`--batch-tiles`, `--flush-minutes`, `--tries`, `--mac-eager`, `--image-cache`)
+are explained in [`panel_pipeline/README.md` A4](panel_pipeline/README.md#a4-detectpy-the-scoring).
+
+Every few minutes it prints a progress line, like:
+
+```
+2024Q3  try 1: 44/200 tiles saved (+22, 0 failed) | 11 tiles/min, download median 101 s
+(slowest 106 s), workers busy 82%, scoring busy 18%, 0 retries | 20 downloading, ...
+```
+
+Check that the "tiles saved" number grows, and that it says `0 failed` and `0 retries`. Ctrl-C stops it safely (what
+is scored is kept).
+
+### Step 5. Start the real run
+
+```bash
+sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20
+#                                  └─ task list ┘ │ └─ downloads per task (W)
+#                                                 └─ tasks at once on the node (N)
+```
+
+Run this **from the repository folder**. `sbatch` hands the job to Slurm and returns
+at once with `Submitted batch job <id>`. The job then runs on one compute node for up
+to 21 days, without you. It works through `tasks.txt` from top to bottom, N tasks side
+by side, and starts the next line whenever one finishes.
+
+**Choosing N and W.** Earth Engine allows our project about **40 downloads at once in
+total**. N × W is what the job asks for, so keep **N × W ≤ 40**: `2 20` (the default)
+or `4 10`. More does not go faster, it only gets "too many requests" errors. The node's
+40 cores are shared out automatically (40 / N each).
+
+### Step 6. Watch it
+
+```bash
+squeue --me                                              # is the job still running? (ST = R means running)
+python panel_pipeline/status.py --run $RUN               # how far is the run?
+tail -f slurm-<id>.out                                   # the job's own log, live (Ctrl-C stops watching, not the job)
+tail -3 $RUN/detect/quarterly/period=2024Q3/subregion=6/_log.txt   # one task's log
+```
+
+`status.py` prints one line per year and one mark per subregion:
+
+```
+#  done   R  running   !  has failed tiles   ~  partly done   S  stopped without cleaning up   .  not started
+```
+
+followed by the tasks worth looking at, with their first error. It only reads, so it is
+safe to run as often as you like, on the login node.
+
+### Step 7. Stop, resume, restart
+
+- **Stop:** `scancel <id>`. Every running task saves what it has scored and stops.
+- **Resume or restart** (after `scancel`, a crash, or the 21-day limit): make a fresh
+  task list and submit again.
+  ```bash
+  python panel_pipeline/status.py --run $RUN --todo > $RUN/tasks.txt
+  sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20
+  ```
+  Finished tasks are not in the new list; half-finished ones continue where they stopped
+  (saved tiles are skipped, failed tiles retried). Nothing is scored twice, so
+  resubmitting is always safe.
+- A task that failed is simply still in the next `--todo` list. If it keeps failing,
+  `status.py` shows its error.
+
+### Step 8. Assemble the panel
+
+When every subregion of a period is `#` (done), join them into one file per period. A
+full-Amazon period needs 10 to 20 GB of memory, so do it in a job:
+
+```bash
+salloc --partition=general1 --nodes=1 --time=4:00:00 --mem=0
+srun python panel_pipeline/assemble_period.py --run $RUN --frequency quarterly
+exit
+```
+
+| Option | Meaning |
+|---|---|
+| `--run`, `--frequency` | which run, which frequency (both required) |
+| `--from`, `--to` | only these periods (default: all of the run's) |
+| `--allow-failed` | also assemble periods with tiles that failed every try; their chips get empty scores and `scored = False` |
+
+It assembles every period that is ready, skips periods already assembled, and at the
+end lists the periods it could not do and why. So you can run it again whenever more
+periods are done. The output, per period:
+
+```
+$RUN/panel/quarterly/scores/period=2024Q3/data.parquet        the scores and quality columns of every chip
+$RUN/panel/quarterly/postprocess/period=2024Q3/data.parquet   AMW's detection flags and distances, same rows
+```
+
+### Step 9. Look at the results, or copy them to a laptop
+
+Read them in Python (inside a job on Goethe, or on a laptop):
+
+```python
+import pandas as pd
+run = "/work/goldmine/<user>/runs/<run>"     # or the laptop copy, e.g. "tests_output/<run>"
+d = pd.read_parquet(f"{run}/panel/quarterly/scores", columns=["chip_id", "period", "confidence", "n_clear"])
+```
+
+Copy to a laptop with `rsync`, **typed on the laptop**. It copies only what is new, so
+it can be run again at any time:
+
+```bash
+rsync -av <user>@goethe.hhlr-gu.de:/work/goldmine/<user>/runs/<run>/{panel,plan,run} tests_output/<run>/
+```
+
+What every column means, more reading examples, and how big things are:
+[`panel_pipeline/README.md` A6 and B6](panel_pipeline/README.md#a6-reading-the-output).
+
+---
+
+## 5. The same on a laptop
+
+The commands are the same; there is just no Slurm. Run each one directly in the
+terminal, from the repository folder, with the environment turned on
+(`source venv/bin/activate`; setting it up: [`panel_pipeline/README.md` A1](panel_pipeline/README.md#a1-environment)).
+
+```bash
+python panel_pipeline/lib/config.py --config configs/test_region_2026-10-19.yaml
+python panel_pipeline/plan.py      --config configs/test_region_2026-10-19.yaml
+python panel_pipeline/detect.py    --run tests_output/test_region_2026-10-19 --frequency quarterly --subregion 2 --from 2026Q1 --to 2026Q3
+python panel_pipeline/status.py    --run tests_output/test_region_2026-10-19
+python panel_pipeline/assemble_period.py --run tests_output/test_region_2026-10-19 --frequency quarterly
+```
+
+Differences from Goethe: `run.output_root` is `tests_output` (ignored by git); Earth
+Engine login is your own (`earthengine authenticate`, once); keep areas small, since a
+laptop stops when it sleeps. Ctrl-C stops a task safely, and running the same command
+again resumes it.
+
+---
+
+## 6. All commands on one page
+
+| What | Command | Where |
+|---|---|---|
+| Start a Goethe session | `ssh <user>@goethe.hhlr-gu.de`, then `cd ~/AMW-mining-detector`, `source cluster/goethe_env.sh`, `RUN=...` | laptop, then login node |
+| Check the Earth Engine login | `python cluster/check_login.py` | login node |
+| Make a config | `cp panel_pipeline/config.yaml configs/<run>.yaml` and edit | login node |
+| Check a config | `python panel_pipeline/lib/config.py --config configs/<run>.yaml` | login node |
+| Plan a run | `python panel_pipeline/plan.py --config configs/<run>.yaml` (in `salloc`/`srun` for a big area) | job |
+| Make the task list | `python panel_pipeline/status.py --run $RUN --todo > $RUN/tasks.txt` | login node |
+| Test one task | `srun python panel_pipeline/detect.py --run $RUN --frequency ... --subregion ... --from ... --to ... --limit 200` | `salloc` on `test` |
+| Start the run | `sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20` | login node |
+| My jobs | `squeue --me` | login node |
+| Stop a job | `scancel <id>` | login node |
+| How far is the run | `python panel_pipeline/status.py --run $RUN` | login node |
+| A job's log | `tail -f slurm-<id>.out` | login node |
+| Assemble | `srun python panel_pipeline/assemble_period.py --run $RUN --frequency quarterly` | job |
+| Copy results | `rsync -av <user>@goethe.hhlr-gu.de:<path>/ <local path>/` | laptop |
+| Help for any script | `python <script>.py --help` | anywhere |
+
+---
+
+## 7. When something goes wrong
+
+| You see | Why | What to do |
+|---|---|---|
+| `python: command not found`, or `ModuleNotFoundError` | the environment is not on | `source cluster/goethe_env.sh` (laptop: `source venv/bin/activate`) |
+| `CONFIG ERROR: ...` | a typo or wrong value in the config | fix what the message names, check again |
+| `PLAN ERROR: ... already exists` | this run was planned before | choose a new `run.name` |
+| `FileNotFoundError: GOOGLE_APPLICATION_CREDENTIALS=...` | the Earth Engine key is not where `goethe_env.sh` says | `ls -l ~/.secrets/`; fix the path in `cluster/goethe_env.sh` |
+| many `retries` in the progress line, tiles failing with `429` | too many downloads at once | smaller N × W (step 5) |
+| `S` in `status.py` | a task died without cleaning up | nothing special: it is in the next `--todo` list and continues |
+| `SKIPPED: ... is being written by ...` | two copies of the same task | let the first one finish; no harm done |
+| the job ended at its time limit | Slurm's 21-day maximum | nothing is lost: step 7 |
+
+More cases: [`panel_pipeline/README.md` B7](panel_pipeline/README.md#b7-if-something-breaks).
+
+---
+
+## 8. What is where in this repository
+
+```
+panel_pipeline/    OUR PIPELINE. The steps you run:
+  config.yaml          the settings template (copy it to configs/)
+  plan.py              step 2
+  detect.py            step 4/5, the scoring
+  status.py            progress and the task list
+  assemble_period.py   step 8
+  lib/                 helper code the steps use (only lib/config.py is run on its own)
+  checks/              speed tests and a notebook for looking at runs; never writes a run
+  docs/                everything written down: decisions, findings, explanations (start at docs/README.md)
+  README.md            the full reference for every option and column
+cluster/           Goethe scripts: goethe_env.sh, detect_tasks.sbatch, check_login.py
+configs/           one committed config per run
+requirements/      the exact Python packages, per platform
+amw_comparison/    our scores compared with AMW's published ones (own README)
+models/            AMW's model (the CNN ensemble in use); tracked in git, no download needed
+data/boundaries/   the region files (Amazon_ACA subregions, test areas, Andes)
+core/ scripts/ utils/   AMW's own code. We import four files from core/; AMW's own
+                   driver (scripts/pipeline.py) and its website publishing are not used
+```
+
+**Provenance.** Files we wrote or changed start with a `PROVENANCE: FORK-ORIGINAL` or
+`FORK-MODIFIED` line; untagged files are AMW's, unchanged. The full list is
+`docs/PROVENANCE.md` (`python scripts/provenance_report.py` regenerates it). AMW's own
+README: [github.com/earthrise-media/mining-detector](https://github.com/earthrise-media/mining-detector#readme).
