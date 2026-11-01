@@ -14,13 +14,12 @@ output column is explained in the full reference,
 Contents
 
 1. [The flow in one picture](#1-the-flow-in-one-picture)
-2. [Words used on this page](#2-words-used-on-this-page)
-3. [How to read a command](#3-how-to-read-a-command)
-4. [A run on the Goethe cluster, step by step](#4-a-run-on-the-goethe-cluster-step-by-step)
-5. [The same on a laptop](#5-the-same-on-a-laptop)
-6. [All commands on one page](#6-all-commands-on-one-page)
-7. [When something goes wrong](#7-when-something-goes-wrong)
-8. [What is where in this repository](#8-what-is-where-in-this-repository)
+2. [How to read a command](#3-how-to-read-a-command)
+3. [A run on the Goethe cluster, step by step](#4-a-run-on-the-goethe-cluster-step-by-step)
+4. [The same on a laptop](#5-the-same-on-a-laptop)
+5. [All commands on one page](#6-all-commands-on-one-page)
+6. [When something goes wrong](#7-when-something-goes-wrong)
+7. [What is where in this repository](#8-what-is-where-in-this-repository)
 
 ---
 
@@ -50,23 +49,7 @@ In words:
 
 ---
 
-## 2. Words used on this page
-
-| Word | Meaning |
-|---|---|
-| **run** | Everything made from one config: one folder, one model, one list of chips. The whole Amazon is one run. |
-| **period** | One month (`2024-07`) or one quarter (`2024Q3`). |
-| **frequency** | `monthly` or `quarterly`. The two are kept apart: separate folders, separate panels. |
-| **subregion** | One of AMW's six pieces of the Amazon, numbered 1 to 6. |
-| **tile** | A square about 5.8 km wide. One Earth Engine download per tile and period. |
-| **chip** | A 48 × 48 pixel square (480 m) inside a tile. The model scores chips. One panel row = one chip in one period. |
-| **task** | One `detect.py` command for one period and one subregion. It writes one folder. Tasks don't depend on each other, so they can run in any order. |
-| **login node** | The Goethe computer you land on after `ssh`. Shared by everyone: only for small things (git, checks, `status.py`). |
-| **job** | Work you hand to the cluster's scheduler (Slurm). It runs on a **compute node**, a whole 40-core computer, even when you log out. |
-
----
-
-## 3. How to read a command
+## 2. How to read a command
 
 ```bash
 python panel_pipeline/detect.py --run /work/goldmine/me/runs/aca --frequency quarterly --subregion 2
@@ -88,7 +71,15 @@ python panel_pipeline/detect.py --run /work/goldmine/me/runs/aca --frequency qua
 
 ---
 
-## 4. A run on the Goethe cluster, step by step
+Run this to set up the environment when not done!
+
+# Mac
+uv pip sync requirements/panel-macos.txt
+# Goethe
+uv pip sync requirements/panel-linux.txt
+
+
+## 3. A run on the Goethe cluster, step by step
 
 One-time setup (account, SSH key, Python environment, Earth Engine key) is in
 [`panel_pipeline/README.md` B2](panel_pipeline/README.md#b2-one-time-setup). The steps
@@ -97,22 +88,18 @@ below assume it is done.
 ### Step 0. Every time you log in
 
 ```bash
-ssh <user>@goethe.hhlr-gu.de              # from your laptop's terminal
-cd ~/AMW-mining-detector                  # the repository
+ssh <user>@goethe.hhlr-gu.de              # from your laptop's terminal or use SSH login in VS Code
+cd ~/AMW-mining-detector                  # the repository can also be chosen in VS Code's "Open Folder"
 source cluster/goethe_env.sh              # turns on the Python environment, the Earth Engine key, thread limits
-RUN=/work/goldmine/<user>/runs/<run>      # $RUN now means your run's folder
+RUN=/work/goldmine/<user>/runs/<run>      # $RUN now means your run's folder - set it before 
 squeue --me                               # which of your jobs are running (an empty list is an answer too)
 ```
-
-`source cluster/goethe_env.sh` is the important one: without it, `python` is the wrong
-Python and Earth Engine doesn't know who you are. The prompt shows `(amw-panel)` when
-it worked.
 
 ### Step 1. Make a config
 
 ```bash
 cp panel_pipeline/config.yaml configs/<run>.yaml      # copy the template
-nano configs/<run>.yaml                               # edit it (any editor)
+nano configs/<run>.yaml                               # edit it (any editor), or just edit in VS Code
 python panel_pipeline/lib/config.py --config configs/<run>.yaml   # check it
 ```
 
@@ -195,7 +182,7 @@ srun python panel_pipeline/detect.py --run $RUN --frequency quarterly --subregio
 exit
 ```
 
-The `detect.py` options you will actually use:
+The `detect.py` options:
 
 | Option | Meaning |
 |---|---|
@@ -229,13 +216,8 @@ sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20
 
 Run this **from the repository folder**. `sbatch` hands the job to Slurm and returns
 at once with `Submitted batch job <id>`. The job then runs on one compute node for up
-to 21 days, without you. It works through `tasks.txt` from top to bottom, N tasks side
+to 21 days. It works through `tasks.txt` from top to bottom, N tasks side
 by side, and starts the next line whenever one finishes.
-
-**Choosing N and W.** Earth Engine allows our project about **40 downloads at once in
-total**. N × W is what the job asks for, so keep **N × W ≤ 40**: `2 20` (the default)
-or `4 10`. More does not go faster, it only gets "too many requests" errors. The node's
-40 cores are shared out automatically (40 / N each).
 
 ### Step 6. Watch it
 

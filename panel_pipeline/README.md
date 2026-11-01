@@ -4,9 +4,6 @@ This folder scores every 48 px chip of a region with AMW's model, month by month
 quarter by quarter, and writes the scores as a chip × period panel. Nothing here
 publishes anything; AMW's own driver (`scripts/pipeline.py`) is not used.
 
-The same four commands run everywhere. Part A says what they do and what every option
-means, using a laptop as the example. Part B says only what is *different* on Goethe.
-
 ```
 config  ──►  plan.py  ──►  detect.py (many times)  ──►  status.py  ──►  assemble_period.py
  yaml        once per run   one task = one (frequency, period, subregion)   any time
@@ -14,7 +11,6 @@ config  ──►  plan.py  ──►  detect.py (many times)  ──►  status
 
 Contents
 - [Folder layout](#folder-layout)
-- [0. Vocabulary](#0-vocabulary)
 - [Part A: on a laptop](#part-a-on-a-laptop)
   - [A1. Environment](#a1-environment)
   - [A2. The config file](#a2-the-config-file)
@@ -70,21 +66,6 @@ core/ scripts/ utils/ docs/   AMW's own code and documents, unchanged; we import
 The steps put `lib/` on Python's search path themselves (one `sys.path.insert` line near
 their imports), so every command stays `python panel_pipeline/<step>.py ...` from the
 repository root.
-
----
-
-## 0. Vocabulary
-
-| Word | Meaning here |
-|---|---|
-| **run** | One `plan.py` result: one folder with one frozen config, one chip list, one model. The whole Amazon is one run; the cluster works *inside* a run. "One run at a time" is a decided principle (`docs/open_design_decisions.Rmd`, P4). |
-| **period** | One month (`2024-07`) or one quarter (`2024Q3`). A period runs from its first day to the first day of the next period, which Earth Engine excludes, so every day is imaged. |
-| **frequency** | `monthly` or `quarterly`. The two never mix: separate folders, separate panels. |
-| **subregion** | One of AMW's six pieces of Amazon_ACA (`data/boundaries/Amazon_ACA/Amazon_ACA_{n}.geojson`). |
-| **tile** | AMW's 552 + 2×12 px square at 10 m, about 5.8 km wide. One Earth Engine request per tile and period. |
-| **chip** | A 48 px square inside a tile, stride 24 px, so 529 overlapping chips per tile. One row of the panel is one chip in one period. |
-| **task** | One `detect.py` command for one (frequency, period, subregion). It writes exactly one folder and nothing else. Tasks are independent, so they can run in any order on any machine. |
-| **part file** | `part_NNNNN.parquet`: the scores saved so far by a task. A new one every few minutes. When the task is complete, all parts are merged into `part_00000.parquet`. |
 
 ---
 
