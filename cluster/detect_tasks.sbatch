@@ -5,9 +5,13 @@
 #     sbatch cluster/detect_tasks.sbatch <run>/tasks.txt [tasks at once] [workers per task]
 #
 # Each line of the file is one detect.py command (one period, one subregion). The job
-# runs N of them side by side (default 2), each with --workers W (default 20), and
+# runs N of them side by side (default 4), each with --workers W (default 5), and
 # starts the next line whenever one finishes, until the file is done. Earth Engine
-# sees N x W requests at once: keep that at or under the project's limit (README B4).
+# sees N x W requests at once: keep that near the project's limit of 40 (README B4).
+#
+# Measured 28 Oct - 1 Nov 2026 (README B4): the node's scoring is the limit, not Earth
+# Engine. 4 tasks x 10 TensorFlow threads score about 115-145 tiles/min per node, 2 x 20
+# only 88. 3 workers per task barely kept the scorer fed (downloads take ~5 s); 5 do.
 # A task that fails stays in the next `status.py --todo`; a finished one is skipped
 # in seconds, so resubmitting is always safe. Stop with `scancel <jobid>`: every task
 # gets the stop signal, saves what it scored, and gives its lock back.
@@ -21,13 +25,13 @@
 #SBATCH --partition=general1
 #SBATCH --nodes=1
 #SBATCH --mem=0                      # all of the node's memory (the node is ours anyway)
-#SBATCH --time=21-00:00:00           # the partition's maximum; tasks resume after it
+#SBATCH --time=7-00:00:00            # Goethe cancels jobs over 7 days when it patches nodes (wiki); tasks resume after it
 #SBATCH --signal=B:USR1@300          # SIGUSR1 to this script 5 min before the limit
 #SBATCH --output=slurm-%j.out        # the job's own log, next to where sbatch was run
 
 TASKS="${1:?usage: sbatch cluster/detect_tasks.sbatch <tasks.txt> [tasks at once] [workers]}"
-AT_ONCE="${2:-2}"
-WORKERS="${3:-20}"
+AT_ONCE="${2:-4}"
+WORKERS="${3:-5}"
 DETECT='^python panel_pipeline/detect.py --run'   # how a running task's command line starts
 
 export TF_THREADS=$(( 40 / AT_ONCE ))         # share the node's 40 cores between the tasks
