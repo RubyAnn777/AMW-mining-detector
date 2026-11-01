@@ -97,7 +97,7 @@ Newest decisions first within each topic. "Rmd Dn" = `open_design_decisions.Rmd`
 | Border tiles | One row per chip, AMW's rule: the copy with the higher confidence (tie: the lower subregion); `_record.json` counts the copies that differ. Measured on 218 border tiles × 8 periods: the copies are identical in every column. Keeping both copies stays possible (Rmd D7) | proposed 1 Nov, for Ruby to confirm (21 Oct: "once we have data") |
 | Panel of part of the region | `--subregions 2 3` writes `<run>/panel_subregions_2_3/`; `panel/` is only for the whole region | 1 Nov |
 | Same AMW centre, different chip (zone seams) | As AMW: one catalogue point per AMW centre key before the neighbour search, the higher score (`dedupe_detections`). Both chips keep their rows; the one dropped gets no distance and `det_* = False`. 368 chip pairs at 60°W in subregion 2 (Rmd D5) | 1 Nov |
-| Masked pixels in the quality columns | detect.py fixed 1 Nov. Tasks scored 22 Oct–1 Nov: assembly makes the values that can't be recovered missing; the scores are unaffected. Re-scoring those tasks (365 task-hours) is open | 1 Nov |
+| Masked pixels in the quality columns | detect.py fixed 1 Nov. Tasks scored 22 Oct–1 Nov: assembly makes the values that can't be recovered missing; the scores are unaffected. Those 16 tasks are re-scored **at the end of the full run** (365 task-hours), new periods first | Ruby, 1 Nov |
 | Distances | Undecided; the MVP stores AMW's distance and a geodesic one (Rmd D3) | 21 Oct |
 | postprocess | AMW's loose (0.43/0.75) and stringent (0.55/0.8) rules, 5th neighbour beyond 3 km, as **flags** | Ruby |
 | Persistence | A flag; the rule is open (Rmd D8). `config.yaml` holds k = 2 within 12 months as a placeholder | Ruby |
