@@ -23,7 +23,7 @@ Contents
   - [B1. What is different](#b1-what-is-different)
   - [B2. One-time setup](#b2-one-time-setup)
   - [B3. A run on the cluster, step by step](#b3-a-run-on-the-cluster-step-by-step)
-  - [B4. The Earth Engine ceiling](#b4-the-earth-engine-ceiling-read-before-planning-a-big-run)
+  - [B4. Speed and limits](#b4-speed-and-limits-read-before-planning-a-big-run)
   - [B5. Storage and backup](#b5-storage-and-backup)
   - [B6. Getting the results](#b6-getting-the-results-on-goethe-or-copied-to-a-laptop)
   - [B7. If something breaks](#b7-if-something-breaks)
@@ -420,8 +420,8 @@ salloc --partition=test --nodes=1 --time=1:55:00 --mem=0
 srun python panel_pipeline/detect.py --run /work/.../<run> --frequency quarterly --subregion 6 --from 2024Q3 --to 2024Q3 --workers 20 --limit 200
 exit
 
-# then unattended: N tasks of tasks.txt at a time on one node, W workers each
-sbatch cluster/detect_tasks.sbatch /work/.../<run>/tasks.txt 2 20
+# then unattended: N tasks of tasks.txt at a time on one node, W workers each (4 and 5: B4)
+sbatch cluster/detect_tasks.sbatch /work/.../<run>/tasks.txt 4 5
 squeue --me                                                    # is it running?
 python panel_pipeline/status.py --run /work/.../<run>          # how far? (login node, any time)
 tail -3 /work/.../<run>/detect/quarterly/period=2024Q3/subregion=6/_log.txt
@@ -430,32 +430,65 @@ tail -3 /work/.../<run>/detect/quarterly/period=2024Q3/subregion=6/_log.txt
 `cluster/detect_tasks.sbatch` runs the lines of a task file on **one node**, N at a time,
 appending `--workers W` to each. A task that fails is simply still in the next
 `status.py --todo`. **Restart = make a new task list and submit again**; finished tasks
-are skipped in seconds. The tasks in flight × W is the Earth Engine load (B4).
+are skipped in seconds. The tasks in flight × W is the Earth Engine load (B4). A job may
+run 7 days (Goethe cancels longer jobs when it patches nodes); five minutes before that
+Slurm signals the job script, every task saves and gives its lock back, and the next
+task list continues them (verified 28 Oct 2026: four tasks stopped in 5 s).
 
-### B4. The Earth Engine ceiling (read before planning a big run)
+### B4. Speed and limits (read before planning a big run)
 
-The cluster is not the bottleneck; Earth Engine is. Two documented limits apply to the
-project, whoever and wherever the requests come from
-(<https://developers.google.com/earth-engine/guides/usage>,
-<https://developers.google.com/earth-engine/guides/noncommercial_tiers>):
+Measured on the first big run (27 Oct – 1 Nov 2026: 2025 Q1 and Q2 as quarters and as
+months, subregions 2 and 3, 703,000 tile-periods, 0 failed, about four days of three
+nodes). Until 26 Oct no request answered at all; the cause was in our code (B7, last
+row), not the network or a quota.
 
-- **40 concurrent requests per project** by default (an adjustable quota). More
-  requests queue and answer "429 Too Many Requests"; detect.py counts those as
-  *retries* in its progress line. Your Mac ran 22 workers with 0 retries (22 Oct).
-- **100,000 EECU-hours per month** on the Partner tier. Not a hard cut-off: over it, the
-  project runs in "restricted mode" (slower) until the 1st of the next month.
+**1. The node's scoring is the limit.** Earth Engine answers a tile-quarter in 7–10 s and
+a tile-month in 4–6 s; the node's TensorFlow scoring is what the progress line shows as
+busy. 10 TensorFlow threads score 36 tiles/min, 20 threads only 44, so four tasks of 10
+threads beat two of 20: **four tasks per node ≈ 115–145 tiles/min** (115 measured with
+3 workers each, which barely kept the scorer fed; 5 workers are the setting).
+`cluster/detect_tasks.sbatch` sets the threads from N (40 / N) and defaults to `4 5`.
 
-Measured on 22 Oct (`checks/bench_download.py`, subregion 3, 2026Q3): one tile-quarter costs
-Earth Engine about **130 EECU-seconds** (56–213) and ~35 s per request on its own;
-18.6 MB of pixels. A month is cheaper (fewer images in the median) but not measured yet:
-`python panel_pipeline/checks/bench_download.py --period 2026-07 --tiles 5`.
+**2. Earth Engine's 40 concurrent requests** per project (an adjustable quota,
+<https://developers.google.com/earth-engine/guides/usage>). At 5 s a request that is
+about 400–480 tiles/min for all jobs together, so **about three nodes at once**. A few
+more requests than 40 only show as *retries* in the progress line (60 in flight: at most
+15 retries per two minutes, harmless). For more than three nodes, ask Google for a
+higher quota.
 
-So, per day, with 40 requests in flight at ~35–60 s each: **about 60,000–100,000
-tile-periods**, and the monthly EECU quota allows about 90,000 tile-quarters a day.
-Scoring that needs about 12 cores, so **one node keeps up**; more nodes only help if
-Google raises the concurrency quota. The full plan (274,932 tiles × 140 periods = 38.5 M
-tile-periods) is therefore about a year of Earth Engine time; quarterly only (9.6 M) about
-3–4 months. This is the number to decide the scope with.
+**3. Earth Engine's compute quota: 100,000 EECU-hours a month** (Partner tier,
+<https://developers.google.com/earth-engine/guides/noncommercial_tiers>; over it the
+project runs in "restricted mode", slower, until the 1st). The cost per tile decides
+the scope, and two benches disagree: **57 EECU-s** per tile-quarter (2026Q3) and
+**145 EECU-s** (2025Q1), both `checks/bench_download.py`; a tile-month is not measured
+(probably about a third). At 145 EECU-s the quota pays for 83,000 tile-quarters a day,
+less than one node's scoring; at 57, for 210,000. **Before the next big run, read the
+month's EECU use off the Earth Engine configuration page**
+(<https://console.cloud.google.com/earth-engine/configuration>) and divide it by the
+tile-periods scored: that is the real cost, and it settles the table below.
+
+**4. Goethe's core-hours.** A node-day is 960 core-hours and scores 165,000–210,000
+tile-periods, about **150–190 tile-periods per core-hour** (less when a task file is
+short and a node runs its last one or two tasks alone).
+
+For the plan (274,932 tiles; 35 quarters and 105 months each):
+
+| Scope | Tile-periods | Core-hours | Calendar, three nodes | EECU-hours (57–145 per tile-quarter, a third per tile-month) |
+|---|---|---|---|---|
+| quarterly only | 9.6 M | 50,000–65,000 | ~17 days | 150,000–390,000: 1.5–4 months of quota |
+| monthly only | 28.9 M | 150,000–195,000 | ~50 days | 150,000–390,000: 1.5–4 months of quota |
+| both | 38.5 M | 200,000–260,000: the allocation or more | ~70 days | 300,000–780,000: 3–8 months of quota |
+
+So three nodes finish the quarterly plan in weeks, but the EECU quota and the core-hour
+allocation, not the cluster, bound the full plan: at the measured pace it runs in
+restricted mode most of each month unless the cost is at the low end, or it is spread
+over months, or the scope shrinks. Decide with the real cost from the console.
+
+**5. Slow nodes.** One of the three nodes (node22-006) downloaded at 18–35 s per tile
+and scored 7 tiles/min per task, with the same code and the same months as the other
+two; its job was stopped cleanly and resubmitted with `--exclude=node22-006` (B7).
+Look at every job's first progress lines: a `download median` far above the others'
+on one node only means that node, not the data.
 
 ### B5. Storage and backup
 
@@ -505,12 +538,14 @@ detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or on
 |---|---|---|
 | `FileNotFoundError: GOOGLE_APPLICATION_CREDENTIALS=…` | key path wrong | `ls -l ~/.secrets/`; fix `cluster/goethe_env.sh` |
 | `403 … permission` at login | the service account lacks a role | `panel_pipeline/docs/cluster/service_account_guide.md` A3 |
-| many *retries* in the progress line, tiles failing with 429 | over the concurrency limit | fewer tasks at once or fewer `--workers`; the sum must stay ≤ 40 |
+| many *retries* in the progress line, tiles failing with 429 | over the concurrency limit | fewer tasks at once or fewer `--workers`; the sum should stay near 40 (60 cost a few harmless retries) |
 | `slurmstepd: … exceeded memory limit` | job killed for memory | use `--mem=0` (whole node) or fewer tasks per node; one task needs ~2–4 GB |
-| job ended at its time limit | `SIGTERM` | nothing lost: resubmit (`status.py --todo` → `sbatch`) |
+| job ended at its time limit | Slurm signals the job script 5 min early (`--signal=B:USR1@300`); every task saves and gives its lock back | nothing lost: resubmit (`status.py --todo` → `sbatch`) |
+| `download median` 20–30 s and `scoring busy` 20% on one node, 5 s and 90% on the others | that node or its network link (node22-006, 28 Oct 2026) | stop its job cleanly, `scancel --batch --signal=USR1 <jobid>`, then resubmit the same task file with `--exclude=<node>` |
 | `S` in status.py | a task died without cleaning up (node lost, `kill -9`) | rerun its command; the lock is taken over after 15 min |
 | `SKIPPED: … is being written by …` | two copies of the same task | let the first finish; this one did no harm |
 | `PLAN ERROR: … already exists` | planning the same run twice | a run is planned once; choose a new `run.name` |
 | `DETECT ERROR: … has changed since this run was planned` | the model file differs | one run uses one model; new run |
 | `quota` shows `/work` nearly full | | archive finished periods, ask the group about the quota |
 | `DETECT ERROR: … written by detect.py before the quality columns of 23 Oct` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |
+| no request answers, anywhere, not even on a laptop: `TimeoutError` after 300 s, `workers busy 100%`, 0 tiles | an Earth Engine expression without a footprint (an `ee.Image.constant` in `quality_bands`, 26 Oct 2026) made Earth Engine open every Sentinel-2 image on the planet per tile | derive every band from the images themselves; `checks/bench_download.py --run $RUN --tiles 1` on the login node shows in seconds whether a request answers |
