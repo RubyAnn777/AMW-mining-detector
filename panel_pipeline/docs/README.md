@@ -20,7 +20,7 @@ and `history/` (old notes, not maintained).
 | What is a class / dataclass / property? | `theory/periods_explained.md` |
 | What happens when I type `python plan.py ...`? | `theory/how_a_script_runs.md` |
 | Threads, workers, the lock file, status.py | `code/workers_locks_and_status.md` |
-| How do our scores compare with AMW's? | `../../amw_comparison/README.md`, `../../amw_comparison/referee_audit.md` |
+| How do our scores compare with AMW's? | `../../amw_comparison/README.md` |
 
 ## Rules for keeping this tidy
 

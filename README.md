@@ -209,15 +209,18 @@ is scored is kept).
 ### Step 5. Start the real run
 
 ```bash
-sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20
+sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 4 5
 #                                  └─ task list ┘ │ └─ downloads per task (W)
 #                                                 └─ tasks at once on the node (N)
 ```
 
 Run this **from the repository folder**. `sbatch` hands the job to Slurm and returns
 at once with `Submitted batch job <id>`. The job then runs on one compute node for up
-to 21 days. It works through `tasks.txt` from top to bottom, N tasks side
-by side, and starts the next line whenever one finishes.
+to 7 days. It works through `tasks.txt` from top to bottom, N tasks side
+by side, and starts the next line whenever one finishes. `4 5` is the measured best
+shape for a 40-core node: four tasks of 10 TensorFlow threads, five downloads each,
+about 115–145 tiles a minute; three such nodes use Earth Engine's 40 requests at once
+([`panel_pipeline/README.md` B4](panel_pipeline/README.md#b4-speed-and-limits-read-before-planning-a-big-run)).
 
 ### Step 6. Watch it
 
@@ -240,11 +243,11 @@ safe to run as often as you like, on the login node.
 ### Step 7. Stop, resume, restart
 
 - **Stop:** `scancel <id>`. Every running task saves what it has scored and stops.
-- **Resume or restart** (after `scancel`, a crash, or the 21-day limit): make a fresh
-  task list and submit again.
+- **Resume or restart** (after `scancel`, a crash, or the 7-day limit, before which the
+  job stops its tasks cleanly by itself): make a fresh task list and submit again.
   ```bash
   python panel_pipeline/status.py --run $RUN --todo > $RUN/tasks.txt
-  sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 2 20
+  sbatch cluster/detect_tasks.sbatch $RUN/tasks.txt 4 5
   ```
   Finished tasks are not in the new list; half-finished ones continue where they stopped
   (saved tiles are skipped, failed tiles retried). Nothing is scored twice, so
@@ -354,7 +357,8 @@ again resumes it.
 | many `retries` in the progress line, tiles failing with `429` | too many downloads at once | smaller N × W (step 5) |
 | `S` in `status.py` | a task died without cleaning up | nothing special: it is in the next `--todo` list and continues |
 | `SKIPPED: ... is being written by ...` | two copies of the same task | let the first one finish; no harm done |
-| the job ended at its time limit | Slurm's 21-day maximum | nothing is lost: step 7 |
+| the job ended at its time limit | 7 days (Goethe's patch rule); the job stopped its tasks cleanly 5 min before | nothing is lost: step 7 |
+| one job's `download median` is 20–30 s and its `scoring busy` 20%, the others' 5 s and 90% | that node or its network link | `scancel --batch --signal=USR1 <id>` (clean stop), then step 7 with `sbatch --exclude=<node> ...` |
 
 More cases: [`panel_pipeline/README.md` B7](panel_pipeline/README.md#b7-if-something-breaks).
 

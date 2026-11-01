@@ -46,8 +46,8 @@ chip_ids, `n_clear` 6.2–91 (mean 21).
 
 ## 2. Our scores against AMW's
 
-Sources: `../../amw_comparison/referee_audit.md` (independent re-check, geometry-matched) and
-`../../amw_comparison/compare_subregion3.ipynb` (23 Oct).
+Source: `../../amw_comparison/README.md` and its notebook `compare.ipynb` (19 to 23 Oct; the
+19 Oct re-check matched by geometry instead of the location key and found the same pairs).
 
 | run | quarter | ours > 0.4 | AMW | both | only ours | only AMW | scores identical |
 |---|---|---|---|---|---|---|---|
@@ -73,11 +73,15 @@ AMW's driver passes a quarter's last day (31 Mar, 30 Jun, 30 Sep, 31 Dec) as Ear
 end date, which `filterDate` excludes, so that day is never imaged. Ours ends on the 1st of the
 next period, so every day is in (STATE.md §4; Rmd D9).
 
-*Measured* (`../../amw_comparison/last_day_check.ipynb`, 20 Oct): Pará 2026Q1, 56 detections
+*Measured* (20 Oct, recorded in `../../amw_comparison/README.md`): Pará 2026Q1, 56 detections
 ours against 27 AMW's, and **the whole gap is 31 March**. Running AMW's own code with the two
 end dates reproduces both results exactly. On Q1 and Q2 of test_region the last day added
 nothing (no clear scene that day). Ruby planned to tell AMW; evidence to send: that rerun and
 their file names ending `_2026-03-31`.
+
+*Measured* on the whole-basin run, 2025Q1 (30 Oct, `amw_comparison/last_day.py`, subregions 2
+and 3): 196 scenes were taken on 31 March. All 104 chips detected by one side only, and 900 of
+the 904 chips both detect with different scores, lie under those scenes.
 
 ## 4. Speed: where the time goes
 

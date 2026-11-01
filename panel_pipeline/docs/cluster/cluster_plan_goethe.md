@@ -35,6 +35,8 @@ layers; one run at a time (P4); DuckDB open (D10).
 
 ## R2. The real ceiling is Earth Engine, not the cluster
 
+*(23 Oct. Superseded by R6 where they differ: after the fix of 26 Oct, scoring is the limit.)*
+
 Google's documented limits for one project, whoever sends the requests
 ([quotas](https://developers.google.com/earth-engine/guides/usage),
 [noncommercial tiers](https://developers.google.com/earth-engine/guides/noncommercial_tiers)):
@@ -115,6 +117,29 @@ come from the Mac measurements (`quarterly_and_parallel_runs.md` §4) and must b
 re-measured on Goethe (Part 6).
 
 ---
+
+## R6. What the first big run measured (28 Oct – 1 Nov)
+
+The full version is `panel_pipeline/README.md` B4; this is the short one.
+
+- No request answered from 25 Oct until the fix of 26 Oct: an `ee.Image.constant` in
+  `detect.quality_bands` had no footprint, so Earth Engine opened every Sentinel-2 image
+  on the planet per tile. Not the network, not a quota: the Mac timed out the same way.
+- After the fix: 7–10 s per tile-quarter, 4–6 s per tile-month, and **the node's scoring
+  is the limit**. 10 TensorFlow threads score 36 tiles/min, 20 threads 44, so four tasks
+  of 10 threads per node (115–145 tiles/min) beat two of 20 (88). `detect_tasks.sbatch`
+  now defaults to 4 tasks and 5 workers; 3 workers barely kept the scorer fed.
+- Earth Engine's 40 requests in flight are about 400–480 tiles/min in total: three nodes.
+- Cost per tile-quarter: 57 and 145 EECU-s in two benches; the month's real figure is on
+  the Earth Engine configuration page and decides the scope. The full plan is 200,000 to
+  260,000 core-hours (the allocation or more) and 3–8 months of EECU quota; quarterly only
+  50,000–65,000 core-hours and 1.5–4 months of quota.
+- One node in three (node22-006) downloaded 4–6 times slower than the others with the
+  same code and months; its job was stopped cleanly and resubmitted with `--exclude`.
+- The clean stop before a time limit works: `--signal=B:USR1@300` in the job script,
+  four tasks saved and unlocked in 5 s (28 Oct). Jobs ask for 7 days, Goethe's patch rule.
+- Done: 2025 Q1–Q2 as quarters and months for subregions 2 and 3, 703,000 tile-periods,
+  0 failed, in about four days of three nodes including the slow-node detour.
 
 ## 1. What Goethe tells us, and why it changes the plan
 
@@ -355,7 +380,7 @@ git clone git@github.com:RubyAnn777/AMW-mining-detector.git ~/AMW-mining-detecto
 cd ~/AMW-mining-detector && git checkout pipeline-rebuild
 uv venv --python 3.11 /work/<group>/<user>/venvs/amw-detect
 source /work/<group>/<user>/venvs/amw-detect/bin/activate
-uv pip sync requirements/detect-linux.lock     # the lock we still have to make (cluster_migration.md §2.3)
+uv pip sync requirements/panel-linux.txt      # the cluster lock file (requirements/README.md)
 ```
 
 `~/.bashrc` is a file of commands your shell runs at every login. The two `export` lines
