@@ -377,7 +377,7 @@ The scripts for the cluster are in `cluster/`.
 |---|---|---|
 | Where commands run | your terminal | inside a Slurm **job** on a compute node; the login node is only for `git`, installs, `status.py` and small checks |
 | Python | `venv/` in the repo | a venv on `/work` (fast, big); the repo in `/home` (backed up) |
-| Earth Engine login | `earthengine authenticate` (browser) | a **service account key** file, named by `GOOGLE_APPLICATION_CREDENTIALS` (see `notes/service_account_guide.md`) |
+| Earth Engine login | `earthengine authenticate` (browser) | a **service account key** file, named by `GOOGLE_APPLICATION_CREDENTIALS` (see `panel_pipeline/docs/cluster/service_account_guide.md`) |
 | `run.output_root` | `tests_output` | `/work/<group>/<user>/runs` |
 | Cores | all of the laptop | a whole node, 40 cores, so **several tasks run side by side on one node** and TensorFlow must be told how many cores each may use (`cluster/goethe_env.sh`) |
 | Stopping | Ctrl-C | `scancel <jobid>` sends the same stop signal: scored tiles are saved |
@@ -386,7 +386,7 @@ The scripts for the cluster are in `cluster/`.
 
 ### B2. One-time setup
 
-The full click-by-click version is in the "Cluster migration" thread. In short:
+The full click-by-click version is in `panel_pipeline/docs/history/cluster_migration.md`. In short:
 
 1. Account and first login (`ssh <user>@goethe.hhlr-gu.de`; the first password must be
    changed at once). Note your group name: `quota` and `ls /work` show it.
@@ -523,7 +523,7 @@ detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or on
 | Symptom | Cause | What to do |
 |---|---|---|
 | `FileNotFoundError: GOOGLE_APPLICATION_CREDENTIALS=…` | key path wrong | `ls -l ~/.secrets/`; fix `cluster/goethe_env.sh` |
-| `403 … permission` at login | the service account lacks a role | `notes/service_account_guide.md` A3 |
+| `403 … permission` at login | the service account lacks a role | `panel_pipeline/docs/cluster/service_account_guide.md` A3 |
 | many *retries* in the progress line, tiles failing with 429 | over the concurrency limit | fewer tasks at once or fewer `--workers`; the sum must stay ≤ 40 |
 | `slurmstepd: … exceeded memory limit` | job killed for memory | use `--mem=0` (whole node) or fewer tasks per node; one task needs ~2–4 GB |
 | job ended at its time limit | `SIGTERM` | nothing lost: resubmit (`status.py --todo` → `sbatch`) |
