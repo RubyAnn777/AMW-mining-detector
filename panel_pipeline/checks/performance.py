@@ -1,13 +1,13 @@
 """How fast a run went and what limited it: the numbers of README B4, read off any run.
 
-    python panel_pipeline/checks/performance.py --run /work/<group>/<user>/runs/<run>
-    python panel_pipeline/checks/performance.py --run ... --jobs <run>/jobs.txt
+    python panel_pipeline/checks/performance.py                 # on Goethe: $RUN, as set at login
+    python panel_pipeline/checks/performance.py --run tests_output/<run>      # a laptop copy
 
 Reads every task folder's `_log.txt` (the progress line detect.py writes every few
-minutes) and `_status.json` (its sessions), and, if given, a Slurm accounting listing
-saved on the cluster with
-
-    sacct --starttime 2026-10-28 -X -P --format=JobID,JobName,NodeList,Start,End,Elapsed,State > $RUN/jobs.txt
+minutes) and `_status.json` (its sessions), plus the jobs: on the cluster it asks
+`sacct` itself and saves the answer as <run>/jobs.txt; elsewhere it reads that file if
+the copy of the run has it. (By hand, on the cluster:
+`sacct --starttime <first day> -X -P --format=JobID,JobName,NodeList,Start,End,Elapsed,State > $RUN/jobs.txt`.)
 
 Prints one line per task (tiles, wall time, tiles/min, download median, what was busy),
 one per job (node, hours, core-hours, tiles scored in it) and the run's totals. The
@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -227,6 +230,33 @@ def jobs(path: Path, cluster_tz: str = "Europe/Berlin") -> pd.DataFrame:
     return out
 
 
+SACCT_FORMAT = "JobID,JobName,NodeList,Start,End,Elapsed,State"
+
+
+def find_jobs(run_dir: Path, sess: pd.DataFrame, path: Path | None = None,
+              cluster_tz: str = "Europe/Berlin") -> tuple[pd.DataFrame | None, str]:
+    """The jobs listing, from a saved file or from sacct itself; and a line saying which.
+
+    Looks for `path` (default <run>/jobs.txt). If there is none and this machine has
+    `sacct` (a Slurm cluster), asks it for the user's jobs since the run's first session
+    and saves the answer as <run>/jobs.txt, so a laptop copy of the run carries it too.
+    """
+    path = Path(path) if path else run_dir / "jobs.txt"
+    if path.is_file():
+        return jobs(path, cluster_tz), f"jobs listing: {path}"
+    if not shutil.which("sacct"):
+        return None, (f"jobs listing: none ({path} not found, and no sacct here: save one on the "
+                      f"cluster, see the module docstring)")
+    since = (sess["started"].min() - pd.Timedelta(days=1)).strftime("%Y-%m-%d") if len(sess) \
+        else "2026-01-01"
+    result = subprocess.run(["sacct", "--starttime", since, "-X", "-P", "--format", SACCT_FORMAT],
+                            capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None, f"jobs listing: sacct failed ({result.stderr.strip()[:200]})"
+    path.write_text(result.stdout)
+    return jobs(path, cluster_tz), f"jobs listing: asked sacct (since {since}) and saved it as {path}"
+
+
 def assign_jobs(sess: pd.DataFrame, job_table: pd.DataFrame | None,
                 slack_minutes: float = 3) -> pd.DataFrame:
     """Give every session the job (and node) that was running when it started."""
@@ -343,20 +373,25 @@ def projection(n_tiles: int, n_periods: dict[str, int], per_core_hour: float,
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="How fast a run went, and what limited it.")
-    ap.add_argument("--run", required=True, help="a run folder, or a laptop copy of its detect/")
-    ap.add_argument("--jobs", help="a saved `sacct -X -P ...` listing (see the module docstring)")
+    ap.add_argument("--run", default=os.environ.get("RUN"),
+                    help="a run folder, or a laptop copy of its detect/ (default: $RUN)")
+    ap.add_argument("--jobs", help="a saved `sacct -X -P ...` listing (default: <run>/jobs.txt, "
+                                   "or sacct itself on the cluster; see the module docstring)")
     ap.add_argument("--cluster-tz", default="Europe/Berlin", help="sacct's time zone")
     ap.add_argument("--cores", type=int, default=40, help="cores per node (core-hours)")
     args = ap.parse_args(argv)
+    if not args.run:
+        ap.error("--run is needed (or set RUN, as the login lines of README B3 do)")
 
     run_dir = Path(args.run).expanduser().resolve()
     lines = progress(run_dir)
     sess = sessions(run_dir, lines)
-    job_table = jobs(Path(args.jobs).expanduser(), args.cluster_tz) if args.jobs else None
+    job_table, note = find_jobs(run_dir, sess, args.jobs, args.cluster_tz)
     sess = assign_jobs(sess, job_table)
     tasks = task_summary(sess)
     pd.set_option("display.width", 200, "display.max_columns", 30, "display.precision", 1)
-    print(f"run  {run_dir}: {len(lines):,} progress lines, {len(sess)} sessions, {len(tasks)} tasks\n")
+    print(f"run  {run_dir}: {len(lines):,} progress lines, {len(sess)} sessions, {len(tasks)} tasks")
+    print(note, "\n")
     if len(tasks):
         show = tasks[TASK_COLUMNS + ["tiles_saved", "tiles_planned", "failed", "sessions", "hours",
                                      "tiles_per_min", "dl_median_s", "workers_busy", "scoring_busy",
