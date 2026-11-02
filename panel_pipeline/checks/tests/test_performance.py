@@ -163,6 +163,21 @@ class PerformanceTest(unittest.TestCase):
         self.assertEqual(perf.totals(tasks, None)["tile_periods_saved"], 3000)
         self.assertTrue(perf.job_summary(sess, None).empty)
 
+    def test_find_jobs_reads_the_saved_file_or_says_why_not(self):
+        sess = perf.sessions(self.run, perf.progress(self.run))
+        table, note = perf.find_jobs(self.run, sess)                 # default <run>/jobs.txt
+        self.assertEqual(len(table), 3)
+        self.assertIn("jobs.txt", note)
+        (self.run / "jobs.txt").unlink()
+        import shutil
+        if shutil.which("sacct"):
+            self.skipTest("a cluster: find_jobs would ask sacct")
+        table, note = perf.find_jobs(self.run, sess)
+        self.assertIsNone(table)
+        self.assertIn("no sacct here", note)
+        table, note = perf.find_jobs(self.run, sess, self.run / "jobs_table.txt")   # an explicit path
+        self.assertEqual(len(table), 2)
+
     def test_projection(self):
         p = perf.projection(n_tiles=274_932, n_periods={"monthly": 105, "quarterly": 35},
                             per_core_hour=150, eecu_per_tile={"quarterly": 145, "monthly": 50},
