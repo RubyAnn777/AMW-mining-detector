@@ -243,6 +243,7 @@ def quality(spectral: np.ndarray, extra: np.ndarray, bounds, stride: int) -> dic
 FLUSH_MINUTES = 2.0       # --flush-minutes default: save a part at least this often
 SLOW_DOWNLOAD_S = 120     # a download slower than this gets its own line in _log.txt
 REQUEST_TIMEOUT_S = 300   # give up on an Earth Engine answer silent for this long
+RETRY_PAUSE_S = 120       # wait before try 2 (and twice as long before try 3)
 
 
 def download(extractor, tile):
@@ -515,8 +516,22 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         if not todo:
             break
         if attempt > 1:
+            # ADDITION: AMW starts the next try at once. When Earth Engine refused tiles
+            # because the project was over its limit of requests at a time ("Too Many
+            # Requests"), it still is a second later, so the few tiles left failed all
+            # three tries within a minute (2026-11-04: 13 tiles in 6 tasks). Waiting lets
+            # the crowd move on; it costs a few idle minutes in a task of many hours.
+            pause = RETRY_PAUSE_S * 2 ** (attempt - 2)
             log.write(f"  {period.tag}  try {attempt}: retrying {len(todo):,} tiles that "
-                      f"failed in try {attempt - 1}")
+                      f"failed in try {attempt - 1}, after a {pause / 60:g} min pause")
+            if STOP.wait(pause):                 # a stop request ends the pause at once
+                lock.check()
+                sessions[-1]["stopped_utc"] = utc_now()
+                write_status(folder, about, planned, errors, sessions,
+                             counted=(saved, n_chips))
+                log.write(f"  {period.tag}  stopped; every scored tile is saved",
+                          screen=False)
+                raise Stopped(STOP_MESSAGE)
         before = len(saved)
         scored, failed, window = [], {}, []      # since the last save / the last line
         last, retries = time.monotonic(), RETRIES.count
