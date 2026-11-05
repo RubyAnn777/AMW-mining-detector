@@ -19,6 +19,7 @@ that are still running or have failed tiles. It changes nothing. Prints:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -28,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
+print = functools.partial(print, flush=True)   # show each line at once in a Slurm log
 VOTES = [f"vote_{i}" for i in range(1, 7)]
 QUALITY = ["n_obs", "n_clear", "empty_share", "thin_share", "clear_day_mean",
            "cs_mean", "cs_clear_mean", "ndvi_mean", "bsi_mean", "cirrus_mean"]
