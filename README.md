@@ -237,7 +237,15 @@ tail -3 $RUN/detect/quarterly/period=2024Q3/subregion=6/_log.txt   # one task's 
 #  done   R  running   !  has failed tiles   ~  partly done   S  stopped without cleaning up   .  not started
 ```
 
-followed by the tasks worth looking at, with their first error. It only reads, so it is
+followed by the tasks worth looking at, with their first error, a progress bar (in tiles)
+for every task that has started but is not done, and which Slurm job and node each running
+task is on (`--all` shows a bar for every task):
+
+```
+progress per task (tiles saved):
+  monthly   2025-04  subregion 2   [####................]  22%     90/412    running, job 1800424 on node12
+running on: job 1800424 on node12 (4 tasks)
+``` It only reads, so it is
 safe to run as often as you like, on the login node.
 
 ### Step 7. Stop, resume, restart

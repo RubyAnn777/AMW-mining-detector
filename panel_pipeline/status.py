@@ -3,6 +3,11 @@
     python panel_pipeline/status.py --run tests_output/test_region_small_2026-10-19
     python panel_pipeline/status.py --run ... --frequency quarterly
     python panel_pipeline/status.py --run ... --todo > tasks.txt   the commands still to run
+    python panel_pipeline/status.py --run ... --all                 a progress bar for every task
+
+Below the grid it shows a progress bar per task (counted in tiles, from _status.json,
+which detect.py updates after every batch) for each task that has started but is not
+done, and which Slurm job and node each running task is on (from its _lock.json).
 
 A task is one detect/<frequency>/period=<tag>/subregion=<n>/ folder, written by one
 detect.py command. This reads the run's frozen config, plan/tiles.csv, and each folder's
@@ -31,15 +36,43 @@ MARKS = {"done": "#", "running": "R", "failed": "!", "partly done": "~",
          "stopped": "S", "not started": "."}
 LEGEND = ("#  done   R  running   !  has failed tiles   ~  partly done   "
           "S  stopped without cleaning up   .  not started")
+BAR = 20                      # characters in a progress bar
 COLUMNS = {"monthly": ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
            "quarterly": ["Q1", "Q2", "Q3", "Q4"]}
 
 
-def subregions_with_tiles(run_dir: Path) -> list[int]:
-    """The subregions this run scores (a test's clip_to can leave some empty)."""
+def tiles_per_subregion(run_dir: Path) -> Counter:
+    """How many tiles each subregion has, the same in every period (plan/tiles.csv).
+
+    Only the subregions this run scores are in it (a test's clip_to can leave some empty).
+    """
     with open(run_dir / "plan" / "tiles.csv", newline="") as f:
-        return sorted({int(row["subregion"]) for row in csv.DictReader(f)})
+        return Counter(int(row["subregion"]) for row in csv.DictReader(f))
+
+
+def tiles_saved(folder: Path, planned: int) -> tuple[int, int]:
+    """(tiles saved, tiles planned) of a task; 0 saved if it has no _status.json yet."""
+    try:
+        status = json.loads((folder / "_status.json").read_text())
+        return status["tiles_saved"], status["tiles_planned"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return 0, planned
+
+
+def job_of(folder: Path) -> str | None:
+    """'job 1800424 on node12' for a running task (its process number outside Slurm)."""
+    held = lock.read(folder)
+    if held is None or held["stale"]:
+        return None
+    who = f"job {held['job']}" if held.get("job") else f"process {held.get('pid', '?')}"
+    return f"{who} on {held.get('host', '?')}"
+
+
+def bar(saved: int, planned: int) -> str:
+    """[#########...........]  45%   (rounded down: a full bar means really done)"""
+    share = saved / planned if planned else 0.0
+    return f"[{'#' * int(share * BAR)}{'.' * (BAR - int(share * BAR))}] {int(share * 100):3d}%"
 
 
 def task_state(folder: Path) -> tuple[str, str]:
@@ -66,17 +99,19 @@ def task_state(folder: Path) -> tuple[str, str]:
 
 
 def tasks(cfg: Config, run_dir: Path, frequencies: list[str],
-          subregions: list[int]) -> list[dict]:
+          planned: Counter) -> list[dict]:
     """Every task of the run, period first: 2018-01 subregions 1..6, then 2018-02, ..."""
     out = []
     for freq in frequencies:
         for period in cfg.periods[freq]:
-            for n in subregions:
+            for n in sorted(planned):
                 folder = (run_dir / "detect" / freq / f"period={period.tag}"
                           / f"subregion={n}")
                 state, note = task_state(folder)
+                saved, of = tiles_saved(folder, planned[n])
                 out.append({"frequency": freq, "period": period, "subregion": n,
-                            "state": state, "note": note})
+                            "state": state, "note": note, "saved": saved, "planned": of,
+                            "job": job_of(folder) if state == "running" else None})
     return out
 
 
@@ -109,6 +144,8 @@ if __name__ == "__main__":
     ap.add_argument("--todo", action="store_true",
                     help="print only the detect.py commands for tasks not done and not "
                          "running, period first, one per line")
+    ap.add_argument("--all", action="store_true",
+                    help="a progress bar for every task, also those done or not started")
     args = ap.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()      # as detect.py reads --run
@@ -121,8 +158,9 @@ if __name__ == "__main__":
     if args.frequency and args.frequency not in cfg.periods:
         raise SystemExit(f"STATUS ERROR: this run has no {args.frequency} periods")
     chosen = [args.frequency] if args.frequency else list(cfg.periods)
-    subregions = subregions_with_tiles(run_dir)
-    rows = tasks(cfg, run_dir, chosen, subregions)
+    planned = tiles_per_subregion(run_dir)
+    subregions = sorted(planned)
+    rows = tasks(cfg, run_dir, chosen, planned)
 
     if args.todo:                    # only commands, so the output can go into a file
         for row in rows:
@@ -137,7 +175,9 @@ if __name__ == "__main__":
         mine = [r for r in rows if r["frequency"] == freq]
         counts = Counter(r["state"] for r in mine)
         summary = ", ".join(f"{counts[s]} {s}" for s in MARKS if counts[s])
+        saved, of = sum(r["saved"] for r in mine), sum(r["planned"] for r in mine)
         print(f"\n{freq}: {len(mine)} tasks: {summary}")
+        print(f"{bar(saved, of)}  {saved:,}/{of:,} tiles saved")
         print("\n".join(grid(mine, freq, subregions)))
     print(f"\n{LEGEND}")
 
@@ -149,3 +189,16 @@ if __name__ == "__main__":
             for r in listed:
                 print(f"  {r['frequency']} {r['period'].tag} subregion {r['subregion']}: "
                       f"{r['note']}")
+
+    # ADDITION (Nov 2026): progress per task in tiles, and where the running ones run.
+    shown = [r for r in rows if args.all or r["state"] not in ("done", "not started")]
+    if shown:
+        print("\nprogress per task (tiles saved):")
+        for r in shown:
+            print(f"  {r['frequency']:<9} {r['period'].tag:<8} subregion {r['subregion']:<3} "
+                  f"{bar(r['saved'], r['planned'])}  {r['saved']:>6,}/{r['planned']:<6,} "
+                  f"{r['state']}" + (f", {r['job']}" if r["job"] else ""))
+    jobs = Counter(r["job"] for r in rows if r["job"])
+    print("\nrunning on: " + ("nothing right now" if not jobs else
+                              "; ".join(f"{job} ({k} task{'s' * (k > 1)})"
+                                        for job, k in sorted(jobs.items()))))
