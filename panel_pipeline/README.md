@@ -494,8 +494,9 @@ tail -3 /work/.../<run>/detect/quarterly/period=2024Q3/subregion=6/_log.txt
 ```
 
 `cluster/detect_tasks.sbatch` runs the lines of a task file on **one node**, N at a time,
-appending `--workers W` to each. A task that fails is simply still in the next
-`status.py --todo`. **Restart = make a new task list and submit again**; finished tasks
+appending `--workers W` to each. When the list is done, the job runs what of it is still
+missing (`status.py --todo`, failed tiles and stopped tasks) in up to 3 more rounds, 16 min
+apart. **Restart = make a new task list and submit again**; finished tasks
 are skipped in seconds. The tasks in flight × W is the Earth Engine load (B4). A job may
 run 7 days (Goethe cancels longer jobs when it patches nodes); five minutes before that
 Slurm signals the job script, every task saves and gives its lock back, and the next

@@ -252,8 +252,11 @@ safe to run as often as you like, on the login node.
   Finished tasks are not in the new list; half-finished ones continue where they stopped
   (saved tiles are skipped, failed tiles retried). Nothing is scored twice, so
   resubmitting is always safe.
-- A task that failed is simply still in the next `--todo` list. If it keeps failing,
-  `status.py` shows its error.
+- **Leftovers are retried by the job itself.** When a job has worked through its list,
+  it asks `status.py --todo` what is still missing from that list (failed tiles, `S`
+  tasks that died without cleaning up), waits 16 min, and runs those, up to 4 rounds in
+  all. Only a task that still fails after that, or one left behind by a job that ended
+  completely, needs a new task list and `sbatch`. `status.py` shows its error.
 
 ### Step 8. Assemble the panel
 
