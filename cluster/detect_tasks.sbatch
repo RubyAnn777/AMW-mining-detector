@@ -12,9 +12,16 @@
 # Measured 28 Oct - 1 Nov 2026 (README B4): the node's scoring is the limit, not Earth
 # Engine. 4 tasks x 10 TensorFlow threads score about 115-145 tiles/min per node, 2 x 20
 # only 88. 3 workers per task barely kept the scorer fed (downloads take ~5 s); 5 do.
-# A task that fails stays in the next `status.py --todo`; a finished one is skipped
-# in seconds, so resubmitting is always safe. Stop with `scancel <jobid>`: every task
-# gets the stop signal, saves what it scored, and gives its lock back.
+# Leftovers are retried by the job itself, in rounds. When the list is done, the job asks
+# `status.py --todo` what is still missing, keeps only tasks that were in its own list
+# (so a 2026 list stays 2026), and runs those: tasks with failed tiles score only those
+# tiles, and tasks that died without cleaning up ("S") continue where they stopped.
+# Before each extra round it waits 16 min, so a dead task's lock is stale (15 min) and
+# Earth Engine's busy spell has passed. It stops when nothing is left, after ROUNDS
+# rounds in all (default 4; `sbatch --export=ALL,ROUNDS=6 ...` to change), or on a stop.
+# A finished task is skipped in seconds, so resubmitting is always safe too. Stop with
+# `scancel <jobid>`: every task gets the stop signal, saves what it scored, and gives
+# its lock back.
 #
 # Near the time limit, Slurm signals only this script (--signal=B:..., five minutes
 # early), not the tasks; on 25 Oct 2026 a task killed at its limit never got the
@@ -32,6 +39,9 @@
 TASKS="${1:?usage: sbatch cluster/detect_tasks.sbatch <tasks.txt> [tasks at once] [workers]}"
 AT_ONCE="${2:-4}"
 WORKERS="${3:-5}"
+ROUNDS="${ROUNDS:-4}"                         # the list once, then up to 3 rounds of leftovers
+ROUND_WAIT_S="${ROUND_WAIT_S:-960}"                             # 16 min: longer than a lock takes to go stale
+STOPPING=0
 DETECT='^python panel_pipeline/detect.py --run'   # how a running task's command line starts
 
 export TF_THREADS=$(( 40 / AT_ONCE ))         # share the node's 40 cores between the tasks
@@ -41,7 +51,8 @@ stop_tasks() {
     # No new task (xargs ends), and every running task saves, unlocks and exits.
     # detect.py treats a repeated SIGTERM as the same request, so forwarding it is safe.
     echo "$(date -u +%FT%TZ) $1: no new task starts; every running task saves and stops"
-    kill -TERM "${XARGS_PID}" 2>/dev/null
+    STOPPING=1                                   # and no further round
+    kill -TERM "${XARGS_PID}" "${SLEEP_PID}" 2>/dev/null
     pkill -TERM -u "${USER}" -f "${DETECT}"
 }
 trap 'stop_tasks "time limit in 5 min"' USR1    # from Slurm, --signal above
@@ -50,22 +61,57 @@ trap 'stop_tasks "cancelled"' TERM              # from scancel
 echo "$(date -u +%FT%TZ) job ${SLURM_JOB_ID} on $(hostname): ${AT_ONCE} tasks at once, ${WORKERS} workers each, ${TF_THREADS} threads each"
 echo "task list: ${TASKS} ($(grep -c . "${TASKS}") lines)"
 
-# xargs starts AT_ONCE shells, hands each the next line as the command to run, and
-# keeps going until the file is empty. Each task's own log is its folder's _log.txt;
-# its screen output goes to this job's slurm-<id>.out, prefixed with its period
-# (sed -u: line by line; without it sed holds about 4 KB back when writing to a file).
-grep . "${TASKS}" | xargs -P "${AT_ONCE}" -I '{}' bash -c \
-    'line="{}"; tag=$(echo "$line" | sed -E "s/.*--from ([^ ]+).*--subregion ([0-9]+).*/\1 s\2/; s/.*--subregion ([0-9]+).*--from ([^ ]+).*/\2 s\1/"); \
-     echo "$(date -u +%FT%TZ) start  $tag"; \
-     $line --workers '"${WORKERS}"' 2>&1 | sed -u "s/^/[$tag] /"; \
-     echo "$(date -u +%FT%TZ) end    $tag (exit ${PIPESTATUS[0]})"' &
-XARGS_PID=$!
+run_list() {
+    # xargs starts AT_ONCE shells, hands each the next line of the file ($1) as the
+    # command to run, and keeps going until the file is empty. Each task's own log is
+    # its folder's _log.txt; its screen output goes to this job's slurm-<id>.out,
+    # prefixed with its period (sed -u: line by line; without it sed holds about 4 KB
+    # back when writing to a file).
+    grep . "$1" | xargs -P "${AT_ONCE}" -I '{}' bash -c \
+        'line="{}"; tag=$(echo "$line" | sed -E "s/.*--from ([^ ]+).*--subregion ([0-9]+).*/\1 s\2/; s/.*--subregion ([0-9]+).*--from ([^ ]+).*/\2 s\1/"); \
+         echo "$(date -u +%FT%TZ) start  $tag"; \
+         $line --workers '"${WORKERS}"' 2>&1 | sed -u "s/^/[$tag] /"; \
+         echo "$(date -u +%FT%TZ) end    $tag (exit ${PIPESTATUS[0]})"' &
+    XARGS_PID=$!
+    wait "${XARGS_PID}"          # returns early when a trapped signal arrives ...
+    wait "${XARGS_PID}"          # ... so wait once more for xargs itself
+}
 
-wait "${XARGS_PID}"          # returns early when a trapped signal arrives ...
-wait "${XARGS_PID}"          # ... so wait once more for xargs itself
+leftovers() {
+    # What is still missing ($1: where to write it): status.py's --todo, only the lines
+    # that are also in this job's own task list. Prints how many there are.
+    python panel_pipeline/status.py --run "${RUN_DIR}" --todo \
+        | grep -Fx -f "${TASKS}" > "$1" || true
+    grep -c . "$1" || true
+}
+
+# The run folder, as the task list's commands name it (status.py prints it the same way).
+RUN_DIR=$(grep -m1 -oE -- '--run [^ ]+' "${TASKS}" | cut -d' ' -f2)
+mkdir -p "${RUN_DIR}/logs"
+LIST="${TASKS}"
+for ROUND in $(seq 1 "${ROUNDS}"); do
+    [ "${ROUND}" -gt 1 ] && echo "$(date -u +%FT%TZ) round ${ROUND} of ${ROUNDS}: $(grep -c . "${LIST}") task(s) left over"
+    run_list "${LIST}"
+    [ "${STOPPING}" = 1 ] || [ "${ROUND}" = "${ROUNDS}" ] && break
+    NEXT="${RUN_DIR}/logs/leftovers_${SLURM_JOB_ID}_round$(( ROUND + 1 )).txt"
+    if [ "$(leftovers "${NEXT}")" = 0 ]; then
+        echo "$(date -u +%FT%TZ) nothing of this list is left to do"
+        break
+    fi
+    echo "$(date -u +%FT%TZ) $(grep -c . "${NEXT}") task(s) not done yet; next round in $(( ROUND_WAIT_S / 60 )) min"
+    sleep "${ROUND_WAIT_S}" & SLEEP_PID=$!
+    wait "${SLEEP_PID}"          # a stop signal ends the wait at once
+    [ "${STOPPING}" = 1 ] && break
+    if [ "$(leftovers "${NEXT}")" = 0 ]; then   # again: other jobs may have done them
+        echo "$(date -u +%FT%TZ) nothing of this list is left to do"
+        break
+    fi
+    LIST="${NEXT}"
+done
+
 for _ in $(seq 60); do       # and up to 5 min for tasks still saving (they are xargs'
     pgrep -u "${USER}" -f "${DETECT}" > /dev/null || break   # grandchildren, not ours to wait on)
     sleep 5
 done
 
-echo "$(date -u +%FT%TZ) job ${SLURM_JOB_ID} finished the list"
+echo "$(date -u +%FT%TZ) job ${SLURM_JOB_ID} finished"
