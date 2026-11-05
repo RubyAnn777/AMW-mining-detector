@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import platform
+import random
 import shutil
 import signal
 import sys
@@ -243,6 +244,8 @@ def quality(spectral: np.ndarray, extra: np.ndarray, bounds, stride: int) -> dic
 FLUSH_MINUTES = 2.0       # --flush-minutes default: save a part at least this often
 SLOW_DOWNLOAD_S = 120     # a download slower than this gets its own line in _log.txt
 REQUEST_TIMEOUT_S = 300   # give up on an Earth Engine answer silent for this long
+LOGIN_WAITS_S = [30, 60, 120, 240, 480]   # waits between refused logins
+RETRY_PAUSE_S = 120       # wait before try 2 (and twice as long before try 3)
 
 
 def download(extractor, tile):
@@ -515,8 +518,22 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         if not todo:
             break
         if attempt > 1:
+            # ADDITION: AMW starts the next try at once. When Earth Engine refused tiles
+            # because the project was over its limit of requests at a time ("Too Many
+            # Requests"), it still is a second later, so the few tiles left failed all
+            # three tries within a minute (2026-11-04: 13 tiles in 6 tasks). Waiting lets
+            # the crowd move on; it costs a few idle minutes in a task of many hours.
+            pause = RETRY_PAUSE_S * 2 ** (attempt - 2)
             log.write(f"  {period.tag}  try {attempt}: retrying {len(todo):,} tiles that "
-                      f"failed in try {attempt - 1}")
+                      f"failed in try {attempt - 1}, after a {pause / 60:g} min pause")
+            if STOP.wait(pause):                 # a stop request ends the pause at once
+                lock.check()
+                sessions[-1]["stopped_utc"] = utc_now()
+                write_status(folder, about, planned, errors, sessions,
+                             counted=(saved, n_chips))
+                log.write(f"  {period.tag}  stopped; every scored tile is saved",
+                          screen=False)
+                raise Stopped(STOP_MESSAGE)
         before = len(saved)
         scored, failed, window = [], {}, []      # since the last save / the last line
         last, retries = time.monotonic(), RETRIES.count
@@ -634,6 +651,27 @@ def with_overrides(cfg: Config, workers: int | None, batch_tiles: int | None,
                         batch_tiles=cfg.inference.batch_tiles if batch_tiles is None else batch_tiles,
                         tries=cfg.inference.tries if tries is None else tries)
     return replace(cfg, imagery=imagery, inference=inference)
+
+
+def log_in_to_earth_engine() -> None:
+    """AMW's login (gee.py:47), tried again while Earth Engine is too busy to answer."""
+    # ADDITION: the login itself asks Earth Engine for its list of functions, and when
+    # the project is over its limit of requests at a time, that is refused with "Too
+    # Many Requests" like any download. AMW then stops; on 2026-11-04 a task on the
+    # cluster crashed this way before scoring anything. Here a refused login waits
+    # 30 s, 1, 2, 4 and 8 min (each a little longer at random, so tasks starting
+    # together don't come back together); any other login error stops at once.
+    for wait_s in LOGIN_WAITS_S + [None]:
+        try:
+            gee._ensure_earth_engine_initialized()
+            return
+        except ee.EEException as err:
+            if wait_s is None or "Too Many Requests" not in str(err):
+                raise
+            wait_s *= random.uniform(1, 1.5)
+            print(f"Earth Engine is too busy to log in; trying again in {wait_s:.0f} s",
+                  flush=True)
+            time.sleep(wait_s)
 
 
 STOP_SIGNALS = [getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGINT")
@@ -764,7 +802,7 @@ if __name__ == "__main__":
     # scores are already here; the 0.2 threshold is applied later, to in_andes chips.
 
     gee.EE_PROJECT = cfg.ee_project              # read by AMW's Earth Engine login (gee.py:73)
-    gee._ensure_earth_engine_initialized()       # AMW's login (gee.py:47), first, so a login
+    log_in_to_earth_engine()                     # AMW's login (gee.py:47), first, so a login
                                                  # problem stops us before any folder is made
     # ADDITION: AMW sets no time limit on Earth Engine requests, and its client sets none
     # by default (ee/_state.py: deadline_ms = 0), so a request whose connection died (a
