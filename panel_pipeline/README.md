@@ -27,6 +27,7 @@ Contents
   - [B5. Storage and backup](#b5-storage-and-backup)
   - [B6. Getting the results](#b6-getting-the-results-on-goethe-or-copied-to-a-laptop)
   - [B7. If something breaks](#b7-if-something-breaks)
+  - [B8. A finished year: assemble, check, compare, notebooks](#b8-a-finished-year-assemble-check-compare-notebooks)
 
 ---
 
@@ -641,3 +642,34 @@ detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or on
 | `quota` shows `/work` nearly full | | archive finished periods, ask the group about the quota |
 | `DETECT ERROR: … written by detect.py before the quality columns of 23 Oct` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |
 | no request answers, anywhere, not even on a laptop: `TimeoutError` after 300 s, `workers busy 100%`, 0 tiles | an Earth Engine expression without a footprint (an `ee.Image.constant` in `quality_bands`, 26 Oct 2026) made Earth Engine open every Sentinel-2 image on the planet per tile | derive every band from the images themselves; `checks/bench_download.py --run $RUN --tiles 1` on the login node shows in seconds whether a request answers |
+
+### B8. A finished year: assemble, check, compare, notebooks
+
+Once `status.py` shows every task of a year done (`#`), four jobs, all from the repository
+root. Each is safe to submit again: what is done is skipped.
+
+```bash
+RUN=/work/<group>/<user>/runs/<run>; YEAR=2026
+A=$(sbatch --parsable cluster/assemble.sbatch $RUN $YEAR)     # months + quarters side by side, then check_panel.py --year
+C=$(sbatch --parsable cluster/amw_compare.sbatch $RUN $YEAR)   # needs AMW's files in amw_comparison/data/amw/
+sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/panel_overview.ipynb $RUN
+sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/explore_runs.ipynb $RUN
+sbatch --dependency=afterok:$C cluster/notebook.sbatch amw_comparison/compare.ipynb $RUN YEAR=$YEAR
+```
+
+- `assemble.sbatch` writes `<run>/panel/` (A7) for the year's months and quarters and
+  checks them; its log is `assemble-<jobid>.out`. Periods of other years are not touched,
+  so the next year is the same command with another `YEAR`, and several years can run as
+  separate jobs at once (each period has its own lock). Failed tiles hold a period back;
+  `sbatch --export=ALL,ALLOW_FAILED=1 cluster/assemble.sbatch ...` assembles it anyway.
+- `amw_compare.sbatch` runs `compare.py --year`, which compares the year's quarters that
+  have an AMW file (AMW publishes quarters from 2025 only). Results go to
+  `<run>/amw_comparison/`; a later year adds its rows to the CSV files there.
+- `notebook.sbatch <notebook> $RUN [SETTING=value ...]` runs a notebook from top to bottom
+  and saves `<run>/reports/<notebook>_<date>_<time>.html` (and `.ipynb`). The settings are
+  the notebook's first-cell values that read the environment (`MAP_PERIOD=2026Q2`,
+  `YEAR=2026`, `FOCUS_QUARTER=2026Q3`, `SUBREGIONS="2 3"`, `CHECK_LAST_DAY=0`, ...).
+- `--parsable` makes `sbatch` print only the job's number, which `A=$( )` keeps;
+  `--dependency=afterok:$A` starts a job only once job `$A` ended without error.
+- Copy the pages to the laptop and open them in a browser:
+  `rsync -av <user>@goethe.hhlr-gu.de:$RUN/reports/ ~/Desktop/reports/` (on the laptop).

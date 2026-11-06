@@ -168,6 +168,34 @@ class TestWholeRun(unittest.TestCase):
             {"complete": True, "tiles_saved": 1, "tiles_planned": 1, "tiles_failed": {}}))
 
 
+class TestYears(unittest.TestCase):
+    """A year's quarters, and results that later years add to instead of replacing."""
+
+    def test_quarters_of_year(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "run").mkdir()
+            (run / "run" / "config.yaml").write_text(
+                "periods: {first_month: '2018-01', last_month: '2026-09'}\n")
+            self.assertEqual(compare.quarters_of_year(run, 2026), ["2026Q1", "2026Q2", "2026Q3"])
+            self.assertEqual(compare.quarters_of_year(run, 2025), [f"2025Q{i}" for i in range(1, 5)])
+            self.assertEqual(compare.quarters_of_year(run, 2027), [])
+
+    def test_write_merged_keeps_other_years(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "joins.csv"
+            key = ["quarter", "subregion"]
+            compare.write_merged(pd.DataFrame({"quarter": ["2026Q1", "2026Q1"], "subregion": [1, 2],
+                                               "n": [1, 2]}), path, key)
+            compare.write_merged(pd.DataFrame({"quarter": ["2025Q4"], "subregion": [1], "n": [3]}),
+                                 path, key)
+            compare.write_merged(pd.DataFrame({"quarter": ["2026Q1"], "subregion": [1], "n": [9]}),
+                                 path, key)       # 2026Q1 again: replaces its own row only
+            got = pd.read_csv(path)
+            self.assertEqual(got.values.tolist(),
+                             [["2025Q4", 1, 3], ["2026Q1", 1, 9], ["2026Q1", 2, 2]])
+
+
 class TestLastDay(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

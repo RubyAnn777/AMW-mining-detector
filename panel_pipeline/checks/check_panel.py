@@ -2,6 +2,7 @@
 
     python panel_pipeline/checks/check_panel.py --run tests_output/<run>
     python panel_pipeline/checks/check_panel.py --run tests_output/<run> --subregions 2 3
+    python panel_pipeline/checks/check_panel.py --run tests_output/<run> --year 2026
 
 Reads every assembled period of both frequencies, a row group at a time, so it needs
 little memory even for the whole region. Prints one line per check and period, and a
@@ -178,8 +179,9 @@ def check_months(base_m: Path, base_q: Path, quarter: str) -> dict:
             "detail": f"largest gap n_obs {worst['n_obs']:.1e}, n_clear {worst['n_clear']:.1e}"}
 
 
-def check_panel(run: str | Path, subregions: list[int] | None = None) -> pd.DataFrame:
-    """Every check of every assembled period, as one table."""
+def check_panel(run: str | Path, subregions: list[int] | None = None,
+                year: int | None = None) -> pd.DataFrame:
+    """Every check of every assembled period (or of one year's), as one table."""
     run = Path(run)
     tiles = pd.read_csv(run / "plan" / "tiles.csv")
     chosen = sorted(set(subregions or tiles["subregion"]))
@@ -189,13 +191,16 @@ def check_panel(run: str | Path, subregions: list[int] | None = None) -> pd.Data
     for frequency in ("monthly", "quarterly"):
         for rec in sorted((base / frequency / "postprocess").glob("period=*/_record.json")):
             tag = rec.parent.name.removeprefix("period=")
+            if year is not None and Period.parse(tag).year != year:
+                continue
             rows += [{"frequency": frequency, **r}
                      for r in check_period(base / frequency, tag, n_planned)]
             if frequency == "quarterly":
                 rows.append({"frequency": frequency,
                              **check_months(base / "monthly", base / "quarterly", tag)})
     if not rows:
-        raise SystemExit(f"CHECK ERROR: nothing assembled in {base}")
+        raise SystemExit(f"CHECK ERROR: nothing assembled in {base}"
+                         + (f" for {year}" if year is not None else ""))
     return pd.DataFrame(rows)
 
 
@@ -204,8 +209,9 @@ if __name__ == "__main__":
     ap.add_argument("--run", required=True, help="the run folder")
     ap.add_argument("--subregions", type=int, nargs="+",
                     help="the panel assembled with --subregions (default: the whole region's)")
+    ap.add_argument("--year", type=int, help="only this year's periods, e.g. 2026 (default: all)")
     args = ap.parse_args()
-    report = check_panel(args.run, args.subregions)
+    report = check_panel(args.run, args.subregions, args.year)
     summary = (report.groupby("check", sort=False)
                .agg(periods=("ok", "size"), passed=("ok", "sum"),
                     example=("detail", "first")))
