@@ -1,24 +1,32 @@
 """Measure what one tile costs Earth Engine, and whether a cheaper recipe gives the same pixels.
 
-    python panel_pipeline/checks/bench_download.py
-    python panel_pipeline/checks/bench_download.py --tiles 3 --period 2026Q3 --start 30000
+    python panel_pipeline/checks/bench_download.py --run $RUN --period 2026Q3
+    python panel_pipeline/checks/bench_download.py --run $RUN --period 2026-09 --tiles 5
+    ... --compare bounded      test the filterBounds recipe instead (see below)
+    ... --amw                  also download AMW's recipe alone, on other tiles
 
-Downloads a few tiles of a planned run three ways, one request at a time, and asks Earth
-Engine for each request's compute profile (ee.data.profiling: the work its servers did,
-in EECU-seconds, which is what a project's monthly quota counts):
-    amw       AMW's recipe only: the 13 bands' cloud-free median (gee.py:208-229)
-    panel     what detect.py downloads: AMW's recipe plus the three extra bands
-              (22 Oct, with two of them: ~130 EECU-s per tile-quarter)
-    bounded   the same as panel, but every image collection is first cut to the tile's
-              footprint (filterBounds), so Earth Engine only joins and scans the images
-              that touch the tile. On 22 Oct (5 tiles of subregion 3, 2026Q3) its pixels
-              equalled panel's, but it saved no work reliably: Earth Engine already loads
-              only the images that touch a tile, and the median is most of the cost
-Each "bounded" tile is downloaded again as "panel", and the two are compared pixel by
-pixel. "amw" uses other tiles, so no request can reuse another's results.
+Downloads a few tiles of a planned run with two recipes, one request at a time, and asks
+Earth Engine for each request's compute profile (ee.data.profiling: the work its servers
+did, in EECU-seconds, which is what a project's monthly quota counts):
+    panel     what detect.py downloads: AMW's recipe plus the five quality bands
+              (22 Oct: ~130 EECU-s per tile-quarter)
+    selected  (default --compare) the same, but the images keep only the 13 bands the
+              model reads before the median. AMW's recipe takes the median of every band
+              of the collection (QA and classification bands, the joined cs_cdf) and the
+              request picks the 13 afterwards (gee.py, _build_composite and get_tile_data).
+              Each band's median is computed on its own, so the pixels must be identical;
+              the question is whether Earth Engine already skips the unused bands
+    bounded   (--compare bounded) the same as panel, but every image collection is first
+              cut to the tile's footprint (filterBounds). On 22 Oct (5 tiles of subregion 3,
+              2026Q3) its pixels equalled panel's, but it saved no work reliably
+    amw       (--amw) AMW's recipe only: the 13 bands' cloud-free median, on other tiles,
+              so no request can reuse another's results
+Each tile is downloaded with both recipes (taking turns going first), and the two are
+compared value by value. A recipe is only safe for the panel if every tile says
+"identical".
 
-Also prints how many MB each answer was: at a given internet speed, the time a download
-needs grows with it. Sends 3 x --tiles requests to the run's Earth Engine project; writes nothing.
+Also prints how many MB each answer was. Sends 2 x --tiles requests (3 x with --amw) to
+the run's Earth Engine project, about 50-200 EECU-s each; writes nothing.
 """
 from __future__ import annotations
 
@@ -68,6 +76,27 @@ class Bounded(detect.PanelExtractor):
 
 RECEIVED = {}                                    # the size of the last answer
 _compute_pixels = ee.data.computePixels
+
+
+class Selected(detect.PanelExtractor):
+    """detect.py's recipe, with only the 13 model bands kept before the median."""
+
+    def _build_composite(self, start_date, end_date):
+        # Copy of AMW's recipe (gee.py, _build_composite) and detect.py's extra bands, with
+        # one change: .select(SPECTRAL) before the join and again before the median, so
+        # the median runs on the 13 bands that are downloaded, not on every band.
+        s2 = ee.ImageCollection("COPERNICUS/S2_HARMONIZED").filterDate(start_date, end_date)
+        cs = ee.ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED")
+        t = self.config.clear_threshold
+        composite = (s2.select(detect.SPECTRAL)
+                     .linkCollection(cs, ["cs_cdf"])
+                     .map(lambda img: img.updateMask(img.select("cs_cdf").gte(t)))
+                     .select(detect.SPECTRAL)
+                     .median().toFloat())
+        return composite.addBands(detect.quality_bands(s2, start_date, t))
+
+
+RECIPES = {"selected": Selected, "bounded": Bounded}
 
 
 def measured_compute_pixels(params, *args, **kwargs):
@@ -123,10 +152,14 @@ def eecu_seconds(profile: str) -> float:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Measure what one tile costs Earth Engine.")
     ap.add_argument("--run", default="tests_output/amw_compare_s3_2026-10-19")
-    ap.add_argument("--period", default="2026Q3")
+    ap.add_argument("--period", default="2026Q3", help="e.g. 2026Q3 or 2026-09")
     ap.add_argument("--tiles", type=int, default=3, help="tiles per recipe (default 3)")
     ap.add_argument("--start", type=int, default=30000,
                     help="first tile, by its row in plan/tiles.csv (default 30000)")
+    ap.add_argument("--compare", choices=sorted(RECIPES), default="selected",
+                    help="the recipe to test against panel (default: selected)")
+    ap.add_argument("--amw", action="store_true",
+                    help="also download AMW's recipe alone, on other tiles")
     args = ap.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()
@@ -134,12 +167,13 @@ if __name__ == "__main__":
     period = Period.parse(args.period)
     keys = pd.read_csv(run_dir / "plan" / "tiles.csv")["tile_key"]
     tiles = [DLTile.from_key(k) for k in keys[args.start:args.start + 2 * args.tiles]]
+
     gee.EE_PROJECT = cfg.ee_project
     gee._ensure_earth_engine_initialized()
     ee.data.setDeadline(detect.REQUEST_TIMEOUT_S * 1000)
-
     panel = detect.extractor_for(cfg, period, None)
-    bounded = Bounded(period.start.isoformat(), period.end.isoformat(), panel.config)
+    test = RECIPES[args.compare](period.start.isoformat(), period.end.isoformat(),
+                                 panel.config)
     amw_config = gee.DataConfig(tilesize=cfg.imagery.tilesize, pad=cfg.imagery.pad,
                                 collection=cfg.imagery.collection, bands=detect.SPECTRAL,
                                 clear_threshold=cfg.imagery.clear_threshold,
@@ -147,15 +181,17 @@ if __name__ == "__main__":
     amw = gee.GEE_Data_Extractor(period.start.isoformat(), period.end.isoformat(),
                                  amw_config)
 
-    print(f"{args.period}, tiles {args.start} to {args.start + 2 * args.tiles - 1} of "
-          f"{run_dir.name}, one request at a time\n", flush=True)
-    rows, profiles = [], {}
-    pairs = (("bounded", bounded), ("panel", panel))
+    print(f"{args.period}, {args.compare} vs panel, tiles {args.start} to "
+          f"{args.start + args.tiles - 1} of {run_dir.name}, one request at a time\n",
+          flush=True)
+    rows, profiles, verdicts = [], {}, []
+    pairs = ((args.compare, test), ("panel", panel))
     for i, (tile, other) in enumerate(zip(tiles[:args.tiles], tiles[args.tiles:])):
-        # bounded and panel take turns going first, in case the second one of a tile
+        # the two recipes take turns going first, in case the second one of a tile
         # profits from work Earth Engine kept from the first
         order = pairs if i % 2 == 0 else pairs[::-1]
-        for name, extractor, t in (*((n, e, tile) for n, e in order), ("amw", amw, other)):
+        extra = (("amw", amw, other),) if args.amw else ()
+        for name, extractor, t in (*((n, e, tile) for n, e in order), *extra):
             pixels, seconds, profile = profiled(extractor, t)
             if profile:
                 profiles.setdefault(name, profile)
@@ -167,17 +203,26 @@ if __name__ == "__main__":
                   + f", {RECEIVED['mb']:5.1f} MB of pixels", flush=True)
             if name == order[1][0]:                  # both recipes have this tile now
                 a, b = rows[-2]["pixels"], rows[-1]["pixels"]     # (H, W, bands) float32
-                same = np.array_equal(a, b, equal_nan=True)
-                differ = ~((a == b) | (np.isnan(a) & np.isnan(b)))
-                print(f"  bounded vs panel pixels: {'identical' if same else 'DIFFERENT'}"
-                      + ("" if same else
-                         f", largest difference {np.nanmax(np.abs(a - b)):.4g}, "
-                         f"{differ.mean():.2%} of values differ"), flush=True)
+                # identical: same values, and the same places masked (-inf) or missing
+                same = a.shape == b.shape and np.array_equal(a, b, equal_nan=True)
+                verdicts.append(same)
+                differ = ~((a == b) | (np.isnan(a) & np.isnan(b))) if a.shape == b.shape else None
+                print(f"  {args.compare} vs panel pixels: "
+                      + ("identical" if same else "DIFFERENT")
+                      + ("" if same or differ is None else
+                         f", {differ.mean():.2%} of values differ, in bands "
+                         + ", ".join(n for n, d in zip(detect.SPECTRAL + detect.EXTRA,
+                                                        differ.any(axis=(0, 1))) if d)),
+                      flush=True)
         print(flush=True)
 
     table = pd.DataFrame(rows).groupby("recipe")[["seconds", "eecu_s", "mb"]].mean()
     print("Average per tile:\n" + table.round(1).to_string())
-    for name in ("panel", "bounded"):
+    if {"panel", args.compare} <= set(table.index):
+        saving = 1 - table.loc[args.compare, "eecu_s"] / table.loc["panel", "eecu_s"]
+        print(f"\n{args.compare} uses {saving:.0%} fewer EECU-seconds than panel; pixels "
+              f"identical on {sum(verdicts)} of {len(verdicts)} tiles")
+    for name in ("panel", args.compare):
         if name in profiles:
             print(f"\nWhere {name}'s EECU-seconds go (Earth Engine's profile of one request):")
             print("\n".join(profiles[name].strip().splitlines()[:15]))
