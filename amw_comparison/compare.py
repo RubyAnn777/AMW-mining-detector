@@ -1,6 +1,7 @@
 """Our detect.py scores against AMW's published quarterly detections, chip by chip.
 
     python amw_comparison/compare.py --run tests_output/aca_full_2026-10-23 --quarters 2025Q1 2025Q2
+    python amw_comparison/compare.py --run <run> --year 2026      every quarter of 2026 in the run
 
 Works for any run: a small test area, one subregion, or the whole basin. Reads the run and
 AMW's files (amw_comparison/data/amw/), and writes a small results folder,
@@ -106,6 +107,43 @@ def key_number(tile_key: str) -> int:
 def frozen_config(run: Path) -> dict:
     """The run's own settings, as plan.py copied them."""
     return yaml.safe_load((run / "run" / "config.yaml").read_text())
+
+
+def quarters_of_year(run: Path, year: int) -> list[str]:
+    """The run's quarters in one year, e.g. ['2026Q1', '2026Q2', '2026Q3'] if it ends in September."""
+    periods = frozen_config(run)["periods"]
+    first, last = str(periods["first_month"]), str(periods["last_month"])
+    quarters = [f"{year}Q{i}" for i in range(1, 5)]
+    # "YYYY-MM" tags sort as text in time order, so a plain comparison is enough
+    return [q for q in quarters
+            if all(first <= m.tag <= last for m in Period.parse(q).months())]
+
+
+def quarters_with_amw(run: Path, year: int, folder: Path = AMW_DIR) -> list[str]:
+    """The run's quarters of one year that have an AMW file (AMW publishes quarters from 2025)."""
+    in_run = quarters_of_year(run, year)
+    quarters = [q for q in in_run if amw_file(q, folder).exists()]
+    for q in in_run:
+        if q not in quarters:
+            print(f"{q}: no AMW file {amw_file(q, folder).name} in {folder}, skipped", flush=True)
+    if not quarters:
+        raise SystemExit(f"COMPARE ERROR: no quarter of {year} in the run has an AMW file in {folder}")
+    return quarters
+
+
+def write_merged(table: pd.DataFrame, path: Path, key: list[str]) -> None:
+    """Write a results table, keeping the rows of earlier calls that this call didn't redo.
+
+    So comparing 2025 after 2026 adds 2025's rows and leaves 2026's in the file; comparing
+    2026 again replaces only 2026's rows.
+    """
+    if path.exists() and not table.empty:
+        old = pd.read_csv(path)
+        if set(key) <= set(old.columns):
+            redone = pd.MultiIndex.from_frame(table[key].astype(str))
+            stale = pd.MultiIndex.from_frame(old[key].astype(str)).isin(redone)
+            table = pd.concat([old[~stale], table], ignore_index=True)
+    table.sort_values(key, kind="mergesort").to_csv(path, index=False)
 
 
 def sha256(path: Path) -> str:
@@ -250,7 +288,8 @@ def compare_run(run: Path, quarters: list[str], subregions: list[int] | None = N
             states[("quarterly", q, n)] = task_state(run, "quarterly", q, n)
             for m in months[q]:
                 states[("monthly", m, n)] = task_state(run, "monthly", m, n)
-    pd.DataFrame(states.values()).to_csv(out / "inputs.csv", index=False)
+    write_merged(pd.DataFrame(states.values()), out / "inputs.csv",
+                 ["frequency", "period", "subregion"])
 
     amw, files = {}, []
     for q in quarters:
@@ -260,7 +299,7 @@ def compare_run(run: Path, quarters: list[str], subregions: list[int] | None = N
                              f"Cooperative (raw_detections/) into {path.parent}")
         amw[q] = read_amw(path)
         files.append({"quarter": q, "file": path.name, "rows": len(amw[q]), "sha256": sha256(path)[:12]})
-    pd.DataFrame(files).to_csv(out / "amw_files.csv", index=False)
+    write_merged(pd.DataFrame(files), out / "amw_files.csv", ["quarter"])
 
     kept, joins = {q: [] for q in quarters}, []
     for n in subregions:                       # the plan is read once per subregion
@@ -279,7 +318,9 @@ def compare_run(run: Path, quarters: list[str], subregions: list[int] | None = N
                   f"({(time.time() - t) / 60:.1f} min)", flush=True)
         del chips
 
-    pd.DataFrame(joins).to_csv(out / "joins.csv", index=False)
+    write_merged(pd.DataFrame(joins, columns=["quarter", "subregion", "AMW rows on our chips",
+                                              "should have matched", "chips sharing a key"]),
+                 out / "joins.csv", ["quarter", "subregion"])
     for q, parts in kept.items():
         if parts:   # border tiles: in two subregions' lists, scored twice
             one_per_location(pd.concat(parts, ignore_index=True)).to_parquet(
@@ -291,7 +332,12 @@ def compare_run(run: Path, quarters: list[str], subregions: list[int] | None = N
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Compare a run with AMW's quarters, chip by chip.")
     ap.add_argument("--run", required=True, type=Path)
-    ap.add_argument("--quarters", nargs="+", required=True, help="e.g. 2025Q1 2025Q2")
+    which = ap.add_mutually_exclusive_group(required=True)
+    which.add_argument("--quarters", nargs="+", help="e.g. 2025Q1 2025Q2")
+    which.add_argument("--year", type=int, help="every quarter of this year in the run, e.g. 2026")
     ap.add_argument("--subregions", nargs="+", type=int, help="default: all in the plan")
     args = ap.parse_args()
-    compare_run(args.run if args.run.is_absolute() else REPO / args.run, args.quarters, args.subregions)
+    run = args.run if args.run.is_absolute() else REPO / args.run
+    quarters = args.quarters or quarters_with_amw(run, args.year)
+    print(f"quarters: {' '.join(quarters)}", flush=True)
+    compare_run(run, quarters, args.subregions)

@@ -43,7 +43,14 @@ folder to the laptop and open the notebook there):
 
 ```bash
 python amw_comparison/compare.py --run tests_output/aca_full_2026-10-23 --quarters 2025Q1 2025Q2
+python amw_comparison/compare.py --run <run> --year 2026     # the year's quarters that have an AMW file
 ```
+
+On Goethe, as a job, and the notebook as a web page (`panel_pipeline/README.md` B8):
+`sbatch cluster/amw_compare.sbatch $RUN 2026`, then
+`sbatch cluster/notebook.sbatch amw_comparison/compare.ipynb $RUN YEAR=2026`.
+`inputs.csv`, `joins.csv` and `amw_files.csv` keep the rows of quarters compared earlier, so
+comparing 2025 after 2026 adds to them.
 
 **3. The last day** (needs Earth Engine): set `CHECK_LAST_DAY = True` in the notebook, or
 
