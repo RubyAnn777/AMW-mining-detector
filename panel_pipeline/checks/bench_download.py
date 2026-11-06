@@ -184,7 +184,7 @@ if __name__ == "__main__":
     print(f"{args.period}, {args.compare} vs panel, tiles {args.start} to "
           f"{args.start + args.tiles - 1} of {run_dir.name}, one request at a time\n",
           flush=True)
-    rows, profiles, verdicts = [], {}, []
+    rows, verdicts = [], []
     pairs = ((args.compare, test), ("panel", panel))
     for i, (tile, other) in enumerate(zip(tiles[:args.tiles], tiles[args.tiles:])):
         # the two recipes take turns going first, in case the second one of a tile
@@ -193,11 +193,9 @@ if __name__ == "__main__":
         extra = (("amw", amw, other),) if args.amw else ()
         for name, extractor, t in (*((n, e, tile) for n, e in order), *extra):
             pixels, seconds, profile = profiled(extractor, t)
-            if profile:
-                profiles.setdefault(name, profile)
             rows.append({"recipe": name, "tile": t.key, "seconds": seconds,
                          "eecu_s": eecu_seconds(profile), "mb": RECEIVED["mb"],
-                         "pixels": pixels})
+                         "pixels": pixels, "profile": profile})
             print(f"  {name:<8} {t.key:<26} {seconds:6.1f} s, "
                   + (f"{rows[-1]['eecu_s']:8.1f} EECU-s" if profile else "  no profile")
                   + f", {RECEIVED['mb']:5.1f} MB of pixels", flush=True)
@@ -216,13 +214,23 @@ if __name__ == "__main__":
                       flush=True)
         print(flush=True)
 
-    table = pd.DataFrame(rows).groupby("recipe")[["seconds", "eecu_s", "mb"]].mean()
-    print("Average per tile:\n" + table.round(1).to_string())
-    if {"panel", args.compare} <= set(table.index):
-        saving = 1 - table.loc[args.compare, "eecu_s"] / table.loc["panel", "eecu_s"]
-        print(f"\n{args.compare} uses {saving:.0%} fewer EECU-seconds than panel; pixels "
-              f"identical on {sum(verdicts)} of {len(verdicts)} tiles")
-    for name in ("panel", args.compare):
-        if name in profiles:
-            print(f"\nWhere {name}'s EECU-seconds go (Earth Engine's profile of one request):")
-            print("\n".join(profiles[name].strip().splitlines()[:15]))
+    table = pd.DataFrame(rows).drop(columns=["pixels", "profile"])
+    print("Average per tile (a recipe's tiles without a profile are left out):\n"
+          + table.groupby("recipe")[["seconds", "eecu_s", "mb"]].mean().round(1).to_string())
+
+    # The same tile with both recipes is the fair comparison: tiles differ in cost far more
+    # than the recipes do (56-213 EECU-s on 22 Oct), so averages over different tiles mislead.
+    pair = (table[table["recipe"].isin(["panel", args.compare])]
+            .pivot(index="tile", columns="recipe", values="eecu_s").dropna())
+    if len(pair):
+        change = pair[args.compare] / pair["panel"] - 1
+        print(f"\nSame tile, both profiled ({len(pair)} tiles): {args.compare} vs panel "
+              + ", ".join(f"{c:+.0%}" for c in change)
+              + f"; median {change.median():+.0%} (negative = {args.compare} is cheaper)")
+    print(f"Pixels identical on {sum(verdicts)} of {len(verdicts)} tiles")
+    if len(pair):
+        tile = pair.index[0]
+        for name in ("panel", args.compare):
+            profile = next(r["profile"] for r in rows if r["tile"] == tile and r["recipe"] == name)
+            print(f"\nWhere {name}'s EECU-seconds go on tile {tile} (Earth Engine's profile):")
+            print("\n".join(profile.strip().splitlines()[:15]))
