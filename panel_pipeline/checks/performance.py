@@ -47,8 +47,8 @@ _HEAD = re.compile(
 _WINDOW = re.compile(
     r"^(?P<rate>\d+) tiles/min, download median (?P<dl_median_s>\d+) s \(slowest "
     r"(?P<dl_max_s>\d+) s\), workers busy (?P<workers_busy>\d+)%, scoring\s*busy "
-    r"(?P<scoring_busy>\d+)%, (?P<retries>\d+) retries$")
-_EMPTY_WINDOW = re.compile(r"^no tile finished in [\d.]+ min, (?P<retries>\d+) retries$")
+    r"(?P<scoring_busy>\d+)%, (?:EE busy )?(?P<retries>\d+)(?: retries|x)$")   # "EE busy 3x" since Nov 2026
+_EMPTY_WINDOW = re.compile(r"^no tile finished in [\d.]+ min, (?:EE busy )?(?P<retries>\d+)(?: retries|x)$")
 _SESSION_START = re.compile(
     r"^(?P<time>\S+)\s+(?P<period>\S+)\s+(?:resuming: (?P<saved>[\d,]+)/[\d,]+ tiles already saved"
     r".*?|starting:) (?P<to_score>[\d,]+) tiles to score, (?P<workers>\d+) workers")

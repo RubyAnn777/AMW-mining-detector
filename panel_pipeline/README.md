@@ -208,15 +208,30 @@ and `n_clear` (mean number of images per pixel, all and cloud-free), `empty_shar
 
 ```
 2026Q3  try 1: 13,282/34,825 tiles saved (+22, 0 failed) | 11 tiles/min, download median 101 s
-(slowest 106 s), workers busy 82%, scoring busy 18%, 0 retries | 22 downloading, 22 waiting
+(slowest 106 s), workers busy 82%, scoring busy 18%, EE busy 0x | 22 downloading, 22 waiting
 for a worker, 0 waiting to be scored, oldest asked for 121 s ago | about 32.9 h left in this try
 ```
 
 - *workers busy* near 100% and *scoring busy* low: Earth Engine (or the network) is
   the limit; more `--workers` may help, up to the project's limit (B4).
 - *scoring busy* near 100%: this computer's scoring is the limit; more workers won't help.
-- *retries* counts Earth Engine's "too many requests" and network retries; a rising
-  number means you are over a limit.
+- *EE busy* (called *retries* before Nov 2026) counts how often Earth Engine answered a
+  single download "too many requests, ask again" and Google's library asked again by
+  itself. Not a failed tile. A rising number means you are over the request limit.
+
+**Retries: four different things.** A *run* and a *retry* are the same command; there is
+no separate retry mode.
+
+| | what is tried again | who does it | where you see it |
+|---|---|---|---|
+| 1. EE busy | one download request, within seconds | Google's library, inside a tile | *EE busy Nx* in the progress line |
+| 2. tries | the tiles that failed, up to 3 tries per session, 2 and 4 min apart | detect.py | `try 2: retrying N tiles` in the progress lines |
+| 3. rounds | the tasks of the job's list still not done, up to 4 rounds, 16 min apart | the job (`detect_tasks.sbatch`) | `round 2 of 4` in `slurm-<id>.out` |
+| 4. resubmit | everything not done, after the job ended | you: the same `sbatch` again | `status.py` |
+
+A tile only counts as *failed* (`!` in status.py) once 2 has given up, and stays failed
+until 3 or 4 saves it. Then `status.py` lists the task under *done after a retry*
+(`_status.json`: `tiles_recovered`, each with its last error).
 
 **Stopping and resuming.** Ctrl-C (or a scheduler's time limit, or a closed terminal)
 saves what is scored, gives the lock back and stops; only the downloads under way are
@@ -245,7 +260,9 @@ python panel_pipeline/status.py --run ... --todo > tasks.txt
 One line per year, one mark per task, subregions in order:
 `#` done · `R` running (live lock) · `!` has failed tiles · `~` partly done ·
 `S` stopped without cleaning up (stale lock; rerun takes it over) · `.` not started.
-Then a list of the tasks worth looking at, with the first error. `--todo` prints the
+`!`, `~` and `S` are finished by submitting the same task again (a retry, A4).
+Then a list of the tasks worth looking at, with the first error, and the tasks *done after
+a retry* (tiles that failed once and were saved later; 10 shown, `--all` for every one). `--todo` prints the
 `detect.py` commands for tasks not done and not running, **period first** (2018-01
 subregions 1…6, then 2018-02, …), one per line: this is the task list for the cluster.
 It reads only; it is safe while detect.py runs.
@@ -478,7 +495,7 @@ salloc --partition=general1 --nodes=1 --time=4:00:00 --mem=0   # interactive job
 srun python panel_pipeline/plan.py --config configs/<run>.yaml
 exit
 
-# the task list, period first
+# (optional) the task list, period first; the job can also make it itself, see below
 python panel_pipeline/status.py --run /work/<group>/<user>/runs/<run> --todo > /work/<group>/<user>/runs/<run>/tasks.txt
 
 # first test: one task, interactively, watching the progress lines
@@ -486,18 +503,24 @@ salloc --partition=test --nodes=1 --time=1:55:00 --mem=0
 srun python panel_pipeline/detect.py --run /work/.../<run> --frequency quarterly --subregion 6 --from 2024Q3 --to 2024Q3 --workers 20 --limit 200
 exit
 
-# then unattended: N tasks of tasks.txt at a time on one node, W workers each (4 and 5: B4)
-sbatch cluster/detect_tasks.sbatch /work/.../<run>/tasks.txt 4 5
+# then unattended: N tasks at a time on one node, W workers each (4 and 5: B4)
+sbatch cluster/detect_tasks.sbatch /work/.../<run> 2026 4 5    # what of 2026 is not done (also: 2026-07, 2026Q3, all)
+sbatch cluster/detect_tasks.sbatch /work/.../<run>/tasks.txt 4 5   # or exactly the lines of a task file
 squeue --me                                                    # is it running?
 python panel_pipeline/status.py --run /work/.../<run>          # how far? (login node, any time)
 tail -3 /work/.../<run>/detect/quarterly/period=2024Q3/subregion=6/_log.txt
 ```
 
-`cluster/detect_tasks.sbatch` runs the lines of a task file on **one node**, N at a time,
-appending `--workers W` to each. When the list is done, the job runs what of it is still
-missing (`status.py --todo`, failed tiles and stopped tasks) in up to 3 more rounds, 16 min
-apart. **Restart = make a new task list and submit again**; finished tasks
-are skipped in seconds. The tasks in flight × W is the Earth Engine load (B4). A job may
+`cluster/detect_tasks.sbatch` runs detect.py tasks on **one node**, N at a time,
+appending `--workers W` to each. Given a run folder and a year (or period, or `all`), it
+makes its own list when it starts: every such task that is not done and not running
+(`status.py --todo`, saved as `<run>/logs/tasks_<jobid>.txt`). Given a task file, it runs
+exactly its lines. When the list is done, the job runs what of it is still missing (failed
+tiles and stopped tasks) in up to 3 more rounds, 16 min apart. **Start, restart and retry
+are the same command** (`sbatch cluster/detect_tasks.sbatch <run> 2026 4 5`); finished
+tasks are left out, and a task file made earlier still works because finished tasks are
+skipped in seconds. Several jobs on the same list share it: a task another job is
+running is skipped. The tasks in flight × W is the Earth Engine load (B4). A job may
 run 7 days (Goethe cancels longer jobs when it patches nodes); five minutes before that
 Slurm signals the job script, every task saves and gives its lock back, and the next
 task list continues them (verified 28 Oct 2026: four tasks stopped in 5 s).

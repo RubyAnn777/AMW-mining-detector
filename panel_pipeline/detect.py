@@ -354,7 +354,7 @@ def describe_window(tiles: list[dict], seconds: float, workers: int, retries: in
     """What happened since the last progress line, in one line."""
     ok = [t for t in tiles if t["error"] is None]
     if not tiles:
-        return f"no tile finished in {seconds / 60:.1f} min, {retries} retries"
+        return f"no tile finished in {seconds / 60:.1f} min, EE busy {retries}x"
     download = np.array([t["download_s"] for t in ok]) if ok else np.zeros(1)
     busy = sum(t["download_s"] for t in tiles) / (workers * seconds)
     scoring = sum(t["score_s"] for t in ok) / seconds
@@ -362,7 +362,7 @@ def describe_window(tiles: list[dict], seconds: float, workers: int, retries: in
     # busy" is near 100%: this computer's scoring is the limit, more workers won't help.
     return (f"{len(tiles) / seconds * 60:.0f} tiles/min, download median "
             f"{np.median(download):.0f} s (slowest {download.max():.0f} s), workers busy "
-            f"{min(busy, 1):.0%}, scoring busy {min(scoring, 1):.0%}, {retries} retries")
+            f"{min(busy, 1):.0%}, scoring busy {min(scoring, 1):.0%}, EE busy {retries}x")
 
 
 # ------------------------------------------------------------ the period's folder
@@ -435,6 +435,9 @@ def write_status(folder: Path, about: dict, planned: list, errors: dict,
     saved, n_chips = counted if counted is not None else saved_tiles(folder)
     missing = {t.key for t in planned if tile_number(t) not in saved}
     failed = {key: err for key, err in errors.items() if key in missing}
+    # ADDITION (Nov 2026): a tile that failed once and was saved by a later try or rerun
+    # stays on record, with its last error, so status.py can say "recovered on retry".
+    recovered = {key: err for key, err in errors.items() if key not in missing}
     status = about | {
         "complete": not missing,
         "tiles_planned": len(planned),
@@ -442,6 +445,7 @@ def write_status(folder: Path, about: dict, planned: list, errors: dict,
         "chips_saved": n_chips,
         "tiles_not_tried": len(missing) - len(failed),
         "tiles_failed": failed,
+        "tiles_recovered": recovered,
         "sessions": sessions,
     }
     tmp = folder / "_status.tmp"
@@ -473,7 +477,8 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
                 part.unlink()
     old = (json.loads((folder / "_status.json").read_text())
            if (folder / "_status.json").exists() else {})
-    errors = old.get("tiles_failed", {})         # tile key -> its latest error
+    errors = (old.get("tiles_recovered", {})     # tile key -> its latest error, for
+              | old.get("tiles_failed", {}))     # every tile that ever failed
     sessions = old.get("sessions", []) + [
         {"started_utc": utc_now(), "finished_utc": None, "limit": limit,
          "max_workers": cfg.imagery.max_workers,       # ADDITION: this session's run-time

@@ -35,7 +35,8 @@ from periods import Period
 MARKS = {"done": "#", "running": "R", "failed": "!", "partly done": "~",
          "stopped": "S", "not started": "."}
 LEGEND = ("#  done   R  running   !  has failed tiles   ~  partly done   "
-          "S  stopped without cleaning up   .  not started")
+          "S  stopped without cleaning up   .  not started\n"
+          "!, ~ and S: submit the same task again (a retry); it scores only what is missing")
 BAR = 20                      # characters in a progress bar
 COLUMNS = {"monthly": ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
@@ -87,12 +88,17 @@ def task_state(folder: Path) -> tuple[str, str]:
     if not path.is_file():
         return "not started", ""
     status = json.loads(path.read_text())
+    # ADDITION (Nov 2026): tiles that failed once and were saved later (detect.py keeps
+    # them under tiles_recovered; older _status.json files don't have it).
+    recovered = len(status.get("tiles_recovered", {}))
     if status["complete"]:
-        return "done", ""
+        return "done", (f"{recovered} tile(s) failed earlier, all recovered on retry"
+                        if recovered else "")
     if status["tiles_failed"]:
         key, error = next(iter(status["tiles_failed"].items()))
-        return "failed", (f"{len(status['tiles_failed'])} tile(s) failed, "
-                          f"e.g. {key}: {error[:120]}")
+        return "failed", (f"{len(status['tiles_failed'])} tile(s) failed"
+                          + (f" ({recovered} others recovered on retry)" if recovered else "")
+                          + f", e.g. {key}: {error[:120]}")
     limit = status["sessions"][-1].get("limit")
     return "partly done", (f"{status['tiles_saved']:,}/{status['tiles_planned']:,} tiles saved"
                            + (f" (last run used --limit {limit})" if limit else ""))
@@ -182,13 +188,17 @@ if __name__ == "__main__":
     print(f"\n{LEGEND}")
 
     for title, states in (("running now", ("running",)),
-                          ("look at these", ("failed", "stopped", "partly done"))):
-        listed = [r for r in rows if r["state"] in states]
+                          ("look at these", ("failed", "stopped", "partly done")),
+                          ("done after a retry", ("done",))):
+        listed = [r for r in rows if r["state"] in states and r["note"]]
         if listed:
             print(f"\n{title}:")
-            for r in listed:
+            cap = None if args.all or title != "done after a retry" else 10
+            for r in listed[:cap]:
                 print(f"  {r['frequency']} {r['period'].tag} subregion {r['subregion']}: "
                       f"{r['note']}")
+            if cap and len(listed) > cap:
+                print(f"  ... and {len(listed) - cap} more (--all lists them all)")
 
     # ADDITION (Nov 2026): progress per task in tiles, and where the running ones run.
     shown = [r for r in rows if args.all or r["state"] not in ("done", "not started")]

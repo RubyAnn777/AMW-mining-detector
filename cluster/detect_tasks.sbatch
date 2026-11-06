@@ -1,8 +1,15 @@
 #!/bin/bash
-# Run detect.py tasks from a task list on ONE node, several at a time.
+# Run detect.py tasks on ONE node, several at a time.
 #
-#     python panel_pipeline/status.py --run <run> --todo > <run>/tasks.txt
+#     sbatch cluster/detect_tasks.sbatch <run folder> <year | period | all> [tasks at once] [workers per task]
 #     sbatch cluster/detect_tasks.sbatch <run>/tasks.txt [tasks at once] [workers per task]
+#
+# With a run folder, the job makes its own list when it starts: every task of that year
+# (2026), period (2026-07, 2026Q3) or of the whole run (all) that is not done and not
+# running (status.py --todo). So the same command starts a year and retries it: what is
+# done is left out, failed tiles and stopped tasks are picked up. Saved in
+# <run>/logs/tasks_<jobid>.txt. A task file instead (status.py --todo > file) runs
+# exactly those lines.
 #
 # Each line of the file is one detect.py command (one period, one subregion). The job
 # runs N of them side by side (default 4), each with --workers W (default 5), and
@@ -36,7 +43,15 @@
 #SBATCH --signal=B:USR1@300          # SIGUSR1 to this script 5 min before the limit
 #SBATCH --output=slurm-%j.out        # the job's own log, next to where sbatch was run
 
-TASKS="${1:?usage: sbatch cluster/detect_tasks.sbatch <tasks.txt> [tasks at once] [workers]}"
+USAGE="usage: sbatch cluster/detect_tasks.sbatch <run folder> <year|period|all> [tasks at once] [workers]
+   or: sbatch cluster/detect_tasks.sbatch <tasks.txt> [tasks at once] [workers]"
+FROM_RUN=""
+if [ -d "${1:?${USAGE}}" ]; then                  # a run folder: make the list below
+    FROM_RUN="$1"
+    WHICH="${2:?${USAGE}}"
+    shift
+fi
+TASKS="$1"
 AT_ONCE="${2:-4}"
 WORKERS="${3:-5}"
 ROUNDS="${ROUNDS:-4}"                         # the list once, then up to 3 rounds of leftovers
@@ -57,6 +72,19 @@ stop_tasks() {
 }
 trap 'stop_tasks "time limit in 5 min"' USR1    # from Slurm, --signal above
 trap 'stop_tasks "cancelled"' TERM              # from scancel
+
+if [ -n "${FROM_RUN}" ]; then
+    mkdir -p "${FROM_RUN}/logs"
+    TASKS="${FROM_RUN}/logs/tasks_${SLURM_JOB_ID}.txt"
+    FILTER="--from ${WHICH} "                   # a period: status.py prints "--from <tag> --to <tag>"
+    [[ "${WHICH}" =~ ^[0-9]{4}$ ]] && FILTER="--from ${WHICH}"   # a year: its months and quarters
+    [ "${WHICH}" = all ] && FILTER="--from "
+    python panel_pipeline/status.py --run "${FROM_RUN}" --todo | grep -F -- "${FILTER}" > "${TASKS}" || true
+    if [ "$(grep -c . "${TASKS}")" = 0 ]; then
+        echo "$(date -u +%FT%TZ) nothing to do in ${FROM_RUN} for ${WHICH}: every task is done or running"
+        exit 0
+    fi
+fi
 
 echo "$(date -u +%FT%TZ) job ${SLURM_JOB_ID} on $(hostname): ${AT_ONCE} tasks at once, ${WORKERS} workers each, ${TF_THREADS} threads each"
 echo "task list: ${TASKS} ($(grep -c . "${TASKS}") lines)"
