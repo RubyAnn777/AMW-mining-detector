@@ -130,10 +130,20 @@ def describe_outside(rows: pd.DataFrame) -> list[str]:
 
 # ------------------------------------------------------------ 3: scoring tiles again
 
+OUTSIDE = "disagreement outside the last day"
+CONTROL = "control: agreement elsewhere"
+
+
 def pick_tiles(t: pd.DataFrame, per_subregion: int, subregions: list[int] | None,
-               seed: int = 0) -> pd.DataFrame:
+               seed: int = 0, outside_per_subregion: int = 0) -> pd.DataFrame:
     """Per subregion, up to N random tiles that hold chips under a last-day scene which
-    disagree, plus one tile of chips that agree and lie elsewhere (a control)."""
+    disagree, plus one tile of chips that agree and lie elsewhere (a control).
+
+    With outside_per_subregion > 0, also the M tiles with the most chips that disagree by
+    0.01 or more although no last-day scene touches them: the gaps the last day cannot
+    explain. Re-scoring those says whether AMW's own code, run today with AMW's dates,
+    still gives AMW's file there (then the date window is the cause after all) or gives our
+    scores (then the imagery in Earth Engine changed after AMW scored the quarter)."""
     rng = np.random.default_rng(seed)
     picks = []
     # Tiles where two of our chips share a location (UTM zone seams) are left out: there
@@ -149,7 +159,11 @@ def pick_tiles(t: pd.DataFrame, per_subregion: int, subregions: list[int] | None
         for tile in rng.permutation(bad)[:per_subregion]:
             picks.append({"subregion": n, "tile": int(tile), "why": "disagreement under the last day"})
         for tile in rng.permutation(good)[:1]:
-            picks.append({"subregion": n, "tile": int(tile), "why": "control: agreement elsewhere"})
+            picks.append({"subregion": n, "tile": int(tile), "why": CONTROL})
+        if outside_per_subregion > 0:
+            far = mine[disagree & ~mine["square_touches"] & (mine["gap"].fillna(1.0) >= 0.01)]
+            for tile in far["tile"].value_counts().index[:outside_per_subregion]:
+                picks.append({"subregion": n, "tile": int(tile), "why": OUTSIDE})
     return pd.DataFrame(picks, columns=["subregion", "tile", "why"])
 
 
@@ -258,7 +272,8 @@ def rescore(run: Path, quarter: str, picks: pd.DataFrame, t: pd.DataFrame, resco
 # ------------------------------------------------------------ one quarter
 
 def check_quarter(run: Path, quarter: str, tiles_per_subregion: int,
-                  subregions: list[int] | None, scenes_fn=None, rescorer=None) -> list[str]:
+                  subregions: list[int] | None, scenes_fn=None, rescorer=None,
+                  outside_per_subregion: int = 0) -> list[str]:
     """All three tests for one quarter. Writes the folder; returns the summary lines."""
     import last_day
     results = run / "amw_comparison"
@@ -287,14 +302,15 @@ def check_quarter(run: Path, quarter: str, tiles_per_subregion: int,
     summary.append("2. Chips that disagree although their centre is not under a last-day scene")
     summary += describe_outside(rows)
 
-    if tiles_per_subregion > 0:
-        picks = pick_tiles(t, tiles_per_subregion, subregions)
+    if tiles_per_subregion > 0 or outside_per_subregion > 0:
+        picks = pick_tiles(t, tiles_per_subregion, subregions,
+                           outside_per_subregion=outside_per_subregion)
         per_tile, per_chip = rescore(run, quarter, picks, t, rescorer or Rescorer(run))
         per_tile.to_csv(out / "rescore.csv", index=False)
         if len(per_chip):
             per_chip.to_parquet(out / "rescore_chips.parquet", index=False)
         summary.append(f"3. Re-scoring {len(per_tile)} tiles "
-                       f"({int((per_tile['why'] != 'control: agreement elsewhere').sum())} with "
+                       f"({int((per_tile['why'] != CONTROL).sum())} with "
                        f"disagreements, the rest controls), tolerance {TOLERANCE:g}")
         for test, what in (("a", "AMW's code + AMW's end date = AMW's published file"),
                            ("b", "our code + our end date = our scores"),
@@ -307,6 +323,9 @@ def check_quarter(run: Path, quarter: str, tiles_per_subregion: int,
                                                   "b: largest gap to our stored scores",
                                                   "c: largest gap to our stored scores")]
             summary.append(f"   largest gaps: a {worst[0]:.1e}, b {worst[1]:.1e}, c {worst[2]:.1e}")
+            for why, group in per_tile.groupby("why", sort=False):     # each kind of tile on its own
+                summary.append(f"   {why}: " + ", ".join(
+                    f"{test} {int(group[f'{test} ok'].sum())} of {len(group)}" for test in "abc"))
     (out / "summary.txt").write_text("\n".join(summary) + "\n")
     return summary
 
@@ -319,6 +338,9 @@ if __name__ == "__main__":
     which.add_argument("--year", type=int, help="every quarter of the year that compare.py has results for")
     ap.add_argument("--tiles", type=int, default=4,
                     help="tiles with disagreements re-scored per subregion (default 4; 0 = no re-scoring)")
+    ap.add_argument("--outside", type=int, default=0,
+                    help="also re-score, per subregion, the N tiles with the most chips that disagree "
+                         "away from any last-day scene (default 0)")
     ap.add_argument("--subregions", type=int, nargs="+", help="re-score only these (default: all)")
     args = ap.parse_args()
     run = args.run if args.run.is_absolute() else REPO / args.run
@@ -329,8 +351,9 @@ if __name__ == "__main__":
                          f"{run / 'amw_comparison'}; run compare.py first")
     import last_day
     last_day.login(run)
-    rescorer = Rescorer(run) if args.tiles > 0 else None
+    rescorer = Rescorer(run) if args.tiles > 0 or args.outside > 0 else None
     for q in quarters:
-        print("\n".join(check_quarter(run, q, args.tiles, args.subregions, rescorer=rescorer)),
+        print("\n".join(check_quarter(run, q, args.tiles, args.subregions, rescorer=rescorer,
+                                         outside_per_subregion=args.outside)),
               "\n", flush=True)
     print(f"results -> {run / 'amw_comparison' / 'last_day_check'}")

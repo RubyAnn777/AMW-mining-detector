@@ -1,9 +1,12 @@
 #!/bin/bash
 # Test whether the quarter's last day explains every gap with AMW (amw_comparison/last_day_check.py).
 #
-#     sbatch cluster/last_day_check.sbatch <run folder> <year> [tiles per subregion]
+#     sbatch cluster/last_day_check.sbatch <run folder> <year> [tiles per subregion] [outside tiles]
 #     sbatch cluster/last_day_check.sbatch $RUN 2026            # 4 tiles per subregion (default)
 #     sbatch cluster/last_day_check.sbatch $RUN 2026 10         # more tiles, a stronger test
+#     sbatch cluster/last_day_check.sbatch $RUN 2026 4 3        # plus the 3 tiles per subregion with the
+#                                                               # most gaps away from any last-day scene
+# A new run replaces the year's earlier results, so give it every kind of tile you want.
 #
 # Needs compare.py's results for the year first (cluster/amw_compare.sbatch). For every
 # quarter of the year it writes <run>/amw_comparison/last_day_check/<quarter>/: a table
@@ -22,14 +25,15 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=lastday-%j.out
 
-USAGE="usage: sbatch cluster/last_day_check.sbatch <run folder> <year> [tiles per subregion]"
+USAGE="usage: sbatch cluster/last_day_check.sbatch <run folder> <year> [tiles per subregion] [outside tiles]"
 RUN="${1:?${USAGE}}"
 YEAR="${2:?${USAGE}}"
 TILES="${3:-4}"
+OUTSIDE="${4:-0}"
 export TF_THREADS=40                       # one process: give TensorFlow the whole node
 source cluster/goethe_env.sh               # run sbatch from the repository root
-echo "$(date '+%F %T')  last-day check of ${YEAR}, ${RUN}, ${TILES} tiles per subregion, code $(git rev-parse --short HEAD)"
-python -u amw_comparison/last_day_check.py --run "${RUN}" --year "${YEAR}" --tiles "${TILES}"
+echo "$(date '+%F %T')  last-day check of ${YEAR}, ${RUN}, ${TILES} tiles per subregion, ${OUTSIDE} outside tiles, code $(git rev-parse --short HEAD)"
+python -u amw_comparison/last_day_check.py --run "${RUN}" --year "${YEAR}" --tiles "${TILES}" --outside "${OUTSIDE}"
 S=$?
 echo "$(date '+%F %T')  done (exit ${S}; 0 = ran through; whether the tests passed is in the summaries above)"
 exit ${S}
