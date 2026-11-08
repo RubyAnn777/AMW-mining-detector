@@ -10,6 +10,8 @@ each score. Nothing is published to a website.
 This page is the short, step-by-step guide to running it. Every option and every
 output column is explained in the full reference,
 [`panel_pipeline/README.md`](panel_pipeline/README.md).
+For copy-paste commands on the Goethe cluster (log in, start and stop scoring, check
+progress, copy files home), see the cluster cheat sheet, [`README_cluster.md`](README_cluster.md).
 
 Contents
 
