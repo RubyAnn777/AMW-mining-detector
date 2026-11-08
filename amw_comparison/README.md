@@ -58,6 +58,22 @@ comparing 2025 after 2026 adds to them.
 python amw_comparison/last_day.py --run tests_output/aca_full_2026-10-23 --quarter 2025Q1
 ```
 
+**4. The full last-day check** (needs Earth Engine and TensorFlow; on Goethe as a job):
+
+```bash
+python amw_comparison/last_day_check.py --run <run> --year 2026        # or --quarters 2026Q1
+sbatch cluster/last_day_check.sbatch $RUN 2026                          # the same, on Goethe
+```
+
+Per quarter, in `<run>/amw_comparison/last_day_check/<quarter>/`: the last-day table per
+subregion (`by_subregion.csv`), the disagreeing chips outside the last day's scenes with
+their score gaps (`outside.csv`), and the decisive test (`rescore.csv`): a few tiles per
+subregion with disagreements, plus one control tile, downloaded and scored again with
+(a) AMW's own downloader and AMW's end date, which must give AMW's published scores,
+(b) ours and our end date, which must give our scores, and (c) AMW's 64-bit downloader with
+our end date, which must also give our scores (so the number format is not the difference).
+`summary.txt` says what passed.
+
 What `<run>/amw_comparison/` holds:
 
 | file | what |
