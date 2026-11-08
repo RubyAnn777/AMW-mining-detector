@@ -91,6 +91,23 @@ class TestLastDayCheck(unittest.TestCase):
         self.assertTrue((outside["square_touches"] | (outside["outcome"] != "both, scores differ")).all()
                         or outside.empty)
 
+    def test_outside_tiles_are_picked_by_their_gaps(self):
+        # tile 1: disagreement under the last day; tile 2: agreement elsewhere (control);
+        # tiles 3 and 4: disagreements far from any last-day scene, tile 4 with more of them
+        rows = [(1, "both, scores differ", True, True, 0.05)] * 3 \
+             + [(2, "both, same score", False, False, 0.0)] * 3 \
+             + [(3, "both, scores differ", False, False, 0.02)] * 2 \
+             + [(4, "both, scores differ", False, False, 0.03)] * 5 \
+             + [(4, "only ours", False, False, np.nan)] \
+             + [(5, "both, scores differ", False, False, 0.0005)] * 9      # tiny gaps: not picked
+        t = pd.DataFrame(rows, columns=["tile", "outcome", "centre_under", "square_touches", "gap"])
+        t["subregion"] = 1
+        picks = ldc.pick_tiles(t, per_subregion=1, subregions=None, outside_per_subregion=1)
+        self.assertEqual(dict(zip(picks["why"], picks["tile"])),
+                         {"disagreement under the last day": 1, ldc.CONTROL: 2, ldc.OUTSIDE: 4})
+        none = ldc.pick_tiles(t, per_subregion=1, subregions=None)
+        self.assertNotIn(ldc.OUTSIDE, set(none["why"]))
+
 
 if __name__ == "__main__":
     unittest.main()
