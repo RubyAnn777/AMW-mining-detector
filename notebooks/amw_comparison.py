@@ -20,10 +20,10 @@ def _():
     sys.path.insert(0, str(REPO / "amw_comparison"))
     sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
     import compare
-    from notebook_kit import find_runs
+    from notebook_kit import thin
 
     _ = alt.data_transformers.disable_max_rows()
-    return Path, alt, compare, find_runs, json, mo, np, os, pd
+    return Path, alt, compare, json, mo, np, os, pd, thin
 
 
 @app.cell(hide_code=True)
@@ -43,19 +43,8 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(find_runs, mo, os):
-    _default = mo.cli_args().get("run") or os.environ.get("RUN") or ""
-    _runs = find_runs(_default)
-    _name = os.path.basename(str(_default).rstrip("/"))
-    run_picker = (mo.ui.dropdown(options=_runs, value=_name if _name in _runs else None, label="Run", full_width=True)
-                  if _runs else mo.ui.text(value=str(_default), label="Run folder", full_width=True))
-    run_picker
-    return (run_picker,)
-
-
-@app.cell(hide_code=True)
-def _(Path, compare, mo, pd, run_picker):
-    RUN = Path(run_picker.value or ".")
+def _(Path, compare, mo, os, pd):
+    RUN = Path(mo.cli_args().get("run") or os.environ.get("RUN") or ".").expanduser()   # view.sbatch passes --run
     RESULTS = RUN / "amw_comparison"
     _available = sorted(p.stem.removeprefix("chips_") for p in RESULTS.glob("chips_*.parquet"))
     mo.stop(not _available, mo.callout(mo.md(
@@ -69,27 +58,24 @@ def _(Path, compare, mo, pd, run_picker):
 
 
 @app.cell(hide_code=True)
-def _(QUARTERS, RAW, chips, mo):
-    _subregions = sorted({int(s) for d in chips.values() for s in d["subregion"].unique()})
+def _(QUARTERS, RAW, RUN, mo):
     quarter = mo.ui.dropdown(options=QUARTERS, value=QUARTERS[-1], label="Quarter")
     threshold = mo.ui.slider(RAW, 0.95, step=0.01, value=RAW, label="Detection threshold", show_value=True)
-    subregion_filter = mo.ui.multiselect(options=[str(s) for s in _subregions], label="Subregions (empty = all)")
     mo.vstack([
-        mo.hstack([quarter, threshold, subregion_filter], justify="start", gap=2),
+        mo.md(f"<small>Run `{RUN.name}`.</small>"),
+        mo.hstack([quarter, threshold], justify="start", gap=2),
         mo.md(f"<small>AMW's threshold is {RAW}: a chip counts as detected above it. AMW's files "
               f"list nothing below {RAW}, so the slider starts there. Raising it shows whether the "
               f"disagreements are borderline scores or confident ones.</small>"),
     ])
-    return quarter, subregion_filter, threshold
+    return quarter, threshold
 
 
 @app.cell(hide_code=True)
-def _(MONTH_COLUMNS, chips, compare, subregion_filter, threshold):
+def _(MONTH_COLUMNS, chips, compare, threshold):
     def selected(q):
-        """The chips of quarter q in the chosen subregions, with outcomes at the chosen threshold."""
+        """The chips of quarter q, with outcomes at the chosen threshold."""
         d = chips[q]
-        if subregion_filter.value:
-            d = d[d["subregion"].astype(str).isin(subregion_filter.value)]
         d = d.assign(outcome=compare.outcome(d, threshold.value))
         if MONTH_COLUMNS[q]:
             d["months_detected"] = (d[MONTH_COLUMNS[q]] > threshold.value).sum(axis=1)
@@ -97,6 +83,16 @@ def _(MONTH_COLUMNS, chips, compare, subregion_filter, threshold):
 
     view = {q: selected(q) for q in chips}
     return (view,)
+
+
+@app.cell(hide_code=True)
+def _(mo, quarter, summary, threshold):
+    _c = summary.loc[quarter.value]
+    mo.callout(mo.md(
+        f"**{quarter.value}** at {threshold.value:.2f}: we detect {_c['ours total']:,} chips, AMW {_c['AMW total']:,}. "
+        f"Both detect {_c['both']:,}, only we {_c['only ours']:,}, only AMW {_c['only AMW']:,}; "
+        f"overlap {_c['overlap (Jaccard)']:.3f}."), kind="info")
+    return
 
 
 @app.cell(hide_code=True)
@@ -138,10 +134,10 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, compare, mo, pd, quarter, threshold, view):
+def _(alt, compare, mo, pd, quarter, thin, threshold, view):
     _gaps = pd.DataFrame({q: compare.score_gap(d) for q, d in view.items()}).T.rename_axis("quarter").reset_index()
     _d = view[quarter.value]
-    _sample = _d[_d["amw_confidence"].notna()]
+    _sample, _note = thin(_d.loc[_d["amw_confidence"].notna(), ["chip_id", "subregion", "outcome", "confidence", "amw_confidence"]])
     _scatter = (alt.Chart(_sample).mark_circle(size=22, opacity=0.6)
                 .encode(x=alt.X("amw_confidence:Q", title="AMW confidence", scale=alt.Scale(domain=[0.35, 1])),
                         y=alt.Y("confidence:Q", title="our confidence", scale=alt.Scale(domain=[0, 1])),
@@ -156,7 +152,7 @@ def _(alt, compare, mo, pd, quarter, threshold, view):
     _near = int(((_dis["confidence"] - threshold.value).abs() <= 0.05).sum())
     mo.vstack([
         mo.ui.table(_gaps.round(6), selection=None, pagination=False),
-        (_scatter + _diagonal + _cut).properties(width=420, height=380, title=quarter.value).interactive(),
+        (_scatter + _diagonal + _cut).properties(width=420, height=380, title=quarter.value + (f" ({_note})" if _note else "")).interactive(),
         mo.md(f"{quarter.value}: {len(_dis):,} chips where only one side detects; for {_near:,} of them our "
               f"score is within 0.05 of the threshold."),
     ])
@@ -237,7 +233,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, mo, np, quarter, view):
+def _(alt, mo, np, pd, quarter, thin, view):
     _d = view[quarter.value]
     mo.stop(not {"amw_key_x", "amw_key_y"} <= set(_d.columns),
             mo.md("This run's comparison files have no chip locations (made before `amw_key_x/y` were kept)."))
@@ -247,15 +243,20 @@ def _(alt, mo, np, quarter, view):
     _counts = _d["kind"].value_counts()
     _d["legend"] = _d["kind"].map(lambda k: f"{k} ({_counts[k]:,})")
     _order = [f"{k} ({_counts[k]:,})" for k in ["same score", "different score", "only ours", "only AMW"] if k in _counts]
+    _d = _d[["chip_id", "subregion", "kind", "legend", "amw_key_x", "amw_key_y", "confidence", "amw_confidence", "gap"]]
+    _rare, _note_rare = thin(_d[_d["kind"] != "same score"])     # the disagreements are drawn first,
+    _same, _note = thin(_d[_d["kind"] == "same score"], max(10_000 - len(_rare), 2_000))   # the agreements fill up
+    _shown = pd.concat([_same, _rare])
     mo.ui.altair_chart(
-        alt.Chart(_d).mark_circle(size=14)
+        alt.Chart(_shown).mark_circle(size=14)
         .encode(x=alt.X("amw_key_x:Q", title="longitude", scale=alt.Scale(zero=False)),
                 y=alt.Y("amw_key_y:Q", title="latitude", scale=alt.Scale(zero=False)),
                 color=alt.Color("legend:N", title=None, sort=_order,
                                 scale=alt.Scale(domain=_order, range=["#a3a29c", "#e2a400", "#2a78d6", "#d64a2a"][:len(_order)])),
                 tooltip=["chip_id", "subregion", "kind", alt.Tooltip("confidence:Q", format=".4f"),
                          alt.Tooltip("amw_confidence:Q", format=".4f"), alt.Tooltip("gap:Q", format=".2e")])
-        .properties(width="container", height=480).interactive(),
+        .properties(width="container", height=480,
+                    title="; ".join(f"{k}: {n}" for k, n in [("same score", _note), ("the others", _note_rare)] if n)).interactive(),
         chart_selection=False, legend_selection=True)
     return
 
@@ -349,16 +350,6 @@ def _(RESULTS, mo, pd):
         mo.ui.table(_problems, selection=None) if len(_problems) else mo.md(""),
         mo.ui.table(pd.read_csv(RESULTS / "joins.csv"), selection=None),
     ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo, quarter, summary, threshold):
-    _c = summary.loc[quarter.value]
-    mo.callout(mo.md(
-        f"**{quarter.value}** at {threshold.value:.2f}: we detect {_c['ours total']:,} chips, AMW {_c['AMW total']:,}. "
-        f"Both detect {_c['both']:,}, only we {_c['only ours']:,}, only AMW {_c['only AMW']:,}; "
-        f"overlap {_c['overlap (Jaccard)']:.3f}."), kind="info")
     return
 
 

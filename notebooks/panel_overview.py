@@ -22,14 +22,14 @@ def _():
     sys.path.insert(0, str(REPO / "panel_pipeline" / "checks"))
     import panel_views as pv
     from check_panel import check_panel
-    from notebook_kit import MONTHLY, QUARTERLY, cached, can_write, find_runs, is_cached
+    from notebook_kit import MONTHLY, QUARTERLY, cached, thin
     from periods import Period
     from variables import dictionary, expand
 
     _ = alt.data_transformers.disable_max_rows()
     FREQ_COLOURS = alt.Scale(domain=["monthly", "quarterly"], range=[MONTHLY, QUARTERLY])
-    return (FREQ_COLOURS, Path, Period, REPO, alt, cached, can_write, check_panel, dictionary, expand,
-            find_runs, gpd, is_cached, mo, np, os, pd, pq, pv)
+    return (FREQ_COLOURS, Path, Period, REPO, alt, cached, check_panel, dictionary, expand,
+            gpd, mo, np, os, pd, pq, pv, thin)
 
 
 @app.cell(hide_code=True)
@@ -50,57 +50,22 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(find_runs, mo, os):
-    _default = mo.cli_args().get("run") or os.environ.get("RUN") or ""
-    _runs = find_runs(_default)
-    _name = os.path.basename(str(_default).rstrip("/"))
-    run_picker = (mo.ui.dropdown(options=_runs, value=_name if _name in _runs else None, label="Run", full_width=True)
-                  if _runs else mo.ui.text(value=str(_default), label="Run folder", full_width=True))
-    return (run_picker,)
-
-
-@app.cell(hide_code=True)
-def _(Path, mo, pv, run_picker):
-    RUN = Path(run_picker.value or ".")
+def _(Path, mo, os, pv):
+    # The run comes from the command line (view.sbatch passes it), the panel too if it is not
+    # the run's main one: python panel_overview.py --run <run> [--panel panel_sub_1_2].
+    RUN = Path(mo.cli_args().get("run") or os.environ.get("RUN") or ".").expanduser()
     _panels = pv.panels(RUN)
-    panel_picker = mo.ui.dropdown(options=_panels, value="panel" if "panel" in _panels else (_panels[0] if _panels else None),
-                                  label="Panel")
-    mo.hstack([run_picker, panel_picker], widths=[3, 1])
-    return RUN, panel_picker
-
-
-@app.cell(hide_code=True)
-def _(RUN, mo, panel_picker, pv):
-    mo.stop(not panel_picker.value, mo.callout(mo.md(
+    _wanted = mo.cli_args().get("panel") or "panel"
+    _name = _wanted if _wanted in _panels else (_panels[0] if _panels else None)
+    mo.stop(not _name, mo.callout(mo.md(
         f"Nothing assembled in `{RUN}` yet (`cluster/assemble.sbatch` on Goethe)."), kind="warn"))
-    PANEL = RUN / panel_picker.value
+    PANEL = RUN / _name
     periods = {f: pv.tags(PANEL, f) for f in pv.FREQUENCIES}
     RECORDS = pv.records(PANEL)
     mo.stop(not periods["quarterly"] and not periods["monthly"],
             mo.callout(mo.md(f"`{PANEL}` has no complete period yet."), kind="warn"))
-    return PANEL, RECORDS, periods
-
-
-@app.cell(hide_code=True)
-def _(PANEL, RECORDS, RUN, can_write, is_cached, mo):
-    _heavy = ["checks", "seen", "by_seen", "agree"]
-    _missing = [n for n in _heavy if not is_cached(RUN, f"{n}_{PANEL.name}", RECORDS)]
-    compute_now = mo.ui.run_button(label="Compute them now", kind="warn")
-    (mo.callout(mo.vstack([
-        mo.md(f"Some summaries of this panel have not been stored yet ({', '.join(_missing)}). Computing them "
-              f"reads every period and takes a while on a full run; nothing is saved, since the run is read-only "
-              f"for you. Ruby's `cluster/summaries.sbatch` stores them for everyone."),
-        compute_now]), kind="neutral")
-     if _missing and not can_write(RUN) else mo.md(""))
-    return (compute_now,)
-
-
-@app.cell(hide_code=True)
-def _(RUN, can_write, compute_now):
-    def may_compute():
-        """Heavy summaries are computed by whoever can store them, or on request."""
-        return can_write(RUN) or compute_now.value
-    return (may_compute,)
+    mo.md(f"<small>Run `{RUN.name}`, panel `{PANEL.name}`.</small>")
+    return PANEL, RECORDS, RUN, periods
 
 
 @app.cell(hide_code=True)
@@ -111,8 +76,9 @@ def _(mo, periods):
     rule = mo.ui.dropdown(options={"raw (confidence > 0.4)": "det_raw", "loose": "det_loose",
                                    "stringent": "det_stringent", "Andes": "det_andes"},
                           value="stringent", label="Detection rule")
-    mo.vstack([mo.md("The quarter and rule below apply to the tables, the map and the distances further down."),
-               mo.hstack([quarter, rule], justify="start", gap=2)])
+    mo.vstack([mo.hstack([quarter, rule], justify="start", gap=2),
+               mo.md("<small>The quarter applies to every section about one quarter (2, 8, 9, 10), the rule to "
+                     "the counts and the map (4, 8).</small>")])
     return quarter, rule
 
 
@@ -164,8 +130,7 @@ def _(mo):
 
     Below are real rows of the chosen quarter: its strongest detections, a few random scored
     chips, and, where there are any, a chip with no clear image and a chip whose tile failed.
-    Select rows to follow those chips through time in section 9. Every table can be
-    downloaded as CSV from its bottom-right corner.
+    Every table can be downloaded as CSV from its bottom-right corner.
     """)
     return
 
@@ -201,11 +166,10 @@ def _(PANEL, RUN, mo, np, picks, pv, quarter):
     example = example[["shown because", "chip_id", "period", "lon", "lat", "in_region", "in_andes",
                        *[c for c in _rows.columns if c not in ("chip_id", "period")],
                        "tile_key", "chip_index", "minx", "miny", "maxx", "maxy"]]
-    example_table = mo.ui.table(example.astype({"chip_id": str} | {c: "float64" for c in example.select_dtypes("float32").columns}).round(4),
-                                selection="multi", pagination=False,
-                                label=f"{len(example)} rows of {quarter.value}, {example.shape[1] - 1} variables (scroll right)")
-    example_table
-    return (example_table,)
+    mo.ui.table(example.astype({"chip_id": str} | {c: "float64" for c in example.select_dtypes("float32").columns}).round(4),
+                selection=None, pagination=False,
+                label=f"{len(example)} rows of {quarter.value}, {example.shape[1] - 1} variables (scroll right)")
+    return
 
 
 @app.cell(hide_code=True)
@@ -278,10 +242,9 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, RECORDS, RUN, cached, check_panel, is_cached, may_compute, mo, panel_picker):
+def _(PANEL, RECORDS, RUN, cached, check_panel, mo):
     _name = f"checks_{PANEL.name}"
-    mo.stop(not (is_cached(RUN, _name, RECORDS) or may_compute()), mo.md("*Not computed yet (see the note at the top).*"))
-    _subregions = None if panel_picker.value == "panel" else [int(n) for n in panel_picker.value.split("_")[2:]]
+    _subregions = None if PANEL.name == "panel" else [int(n) for n in PANEL.name.split("_")[2:]]
     with mo.status.spinner(title="Checking every period..."):
         _report = cached(RUN, _name, lambda: check_panel(RUN, _subregions), RECORDS)
     _summary = _report.groupby("check", sort=False).agg(periods=("ok", "size"), passed=("ok", "sum"), example=("detail", "first"))
@@ -326,20 +289,18 @@ def _(PANEL, Period, mo, pd, periods, pv):
                           "det_stringent": _c["stringent"]["detected"], "det_andes": _c["andes"],
                           "isolated (loose)": _c["loose"]["isolated"]})
     counts = pd.DataFrame(_rows)
-    count_rule = mo.ui.radio(options={"raw": "det_raw", "loose": "det_loose", "stringent": "det_stringent", "Andes": "det_andes"},
-                             value="stringent", inline=True, label="Rule")
-    count_rule
-    return count_rule, counts
+    return (counts,)
 
 
 @app.cell(hide_code=True)
-def _(FREQ_COLOURS, alt, count_rule, counts, mo, pd):
-    _r = count_rule.value
+def _(FREQ_COLOURS, alt, counts, mo, pd, rule):
+    _r = rule.value
+    _rule_name = [k for k, v in rule.options.items() if v == _r][0]
     _months = counts[counts["frequency"] == "monthly"].assign(mid=lambda d: d["start"] + pd.Timedelta(days=14))
     _quarters = counts[counts["frequency"] == "quarterly"]
     _tip = ["frequency", "period", alt.Tooltip(f"{_r}:Q", format=",", title="chips")]
     _m = alt.Chart(_months).mark_line(point=True).encode(
-        x=alt.X("mid:T", title=None), y=alt.Y(f"{_r}:Q", title="chips detected", axis=alt.Axis(format=",d", tickMinStep=1), scale=alt.Scale(domainMin=0)),
+        x=alt.X("mid:T", title=None), y=alt.Y(f"{_r}:Q", title=f"chips detected, {_rule_name}", axis=alt.Axis(format=",d", tickMinStep=1), scale=alt.Scale(domainMin=0)),
         color=alt.Color("frequency:N", scale=FREQ_COLOURS, title=None), tooltip=_tip)
     _q = alt.Chart(_quarters).mark_rule(strokeWidth=3).encode(
         x="start:T", x2="end:T", y=f"{_r}:Q", color=alt.Color("frequency:N", scale=FREQ_COLOURS), tooltip=_tip)
@@ -371,7 +332,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, RECORDS, RUN, cached, is_cached, may_compute, mo, np, pd, periods, pv):
+def _(PANEL, RECORDS, RUN, cached, mo, np, pd, periods, pv):
     def _seen():
         _rows = []
         for _f, _ts in periods.items():
@@ -384,25 +345,14 @@ def _(PANEL, RECORDS, RUN, cached, is_cached, may_compute, mo, np, pd, periods, 
         return pd.DataFrame(_rows)
 
     _name = f"seen_{PANEL.name}"
-    mo.stop(not (is_cached(RUN, _name, RECORDS) or may_compute()), mo.md("*Not computed yet (see the note at the top).*"))
     with mo.status.spinner(title="Reading n_clear of every period..."):
         seen = cached(RUN, _name, _seen, RECORDS)
-    seen_measure = mo.ui.dropdown(options=["under 1", "no clear image", "quality lost", "median n_clear"],
-                                  value="under 1", label="Show")
-    seen_measure
-    return seen, seen_measure
-
-
-@app.cell(hide_code=True)
-def _(FREQ_COLOURS, alt, mo, seen, seen_measure):
-    _m = seen_measure.value
-    _share = _m != "median n_clear"
     mo.vstack([
         alt.Chart(seen).mark_bar().encode(
             x=alt.X("period:N", sort=None, title=None),
-            y=alt.Y(f"{_m}:Q", title=_m + (" (share of chips)" if _share else ""), axis=alt.Axis(format="%" if _share else "")),
+            y=alt.Y("under 1:Q", title="share of chips with under 1 clear scene", axis=alt.Axis(format="%")),
             color=alt.Color("frequency:N", scale=FREQ_COLOURS, title=None),
-            tooltip=["frequency", "period", alt.Tooltip(f"{_m}:Q", format=".1%" if _share else ".1f")],
+            tooltip=["frequency", "period", alt.Tooltip("under 1:Q", format=".1%"), alt.Tooltip("no clear image:Q", format=".1%")],
         ).properties(width="container", height=260),
         mo.ui.table(seen.round(4), selection=None, page_size=12),
     ])
@@ -426,7 +376,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(FREQ_COLOURS, PANEL, RECORDS, RUN, alt, cached, is_cached, may_compute, mo, np, pd, periods, pv):
+def _(FREQ_COLOURS, PANEL, RECORDS, RUN, alt, cached, mo, np, pd, periods, pv):
     _edges = [0, 1e-9, 1, 3, 10, np.inf]
     _labels = ["none (0)", "under 1", "1 to 3", "3 to 10", "10 or more"]
 
@@ -449,7 +399,6 @@ def _(FREQ_COLOURS, PANEL, RECORDS, RUN, alt, cached, is_cached, may_compute, mo
         return pd.DataFrame(_rows), _top
 
     _name = f"by_seen_{PANEL.name}"
-    mo.stop(not (is_cached(RUN, _name, RECORDS) or may_compute()), mo.md("*Not computed yet (see the note at the top).*"))
     with mo.status.spinner(title="Reading every period..."):
         _table, _top = cached(RUN, _name, _by_seen, RECORDS)
     mo.vstack([
@@ -479,7 +428,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, Period, RECORDS, RUN, cached, is_cached, may_compute, mo, np, pd, periods, pv):
+def _(PANEL, Period, RECORDS, RUN, cached, mo, np, pd, periods, pv):
     def _agree():
         _rows = []
         for _q in periods["quarterly"]:
@@ -498,7 +447,6 @@ def _(PANEL, Period, RECORDS, RUN, cached, is_cached, may_compute, mo, np, pd, p
         return pd.DataFrame(_rows)
 
     _name = f"agree_{PANEL.name}"
-    mo.stop(not (is_cached(RUN, _name, RECORDS) or may_compute()), mo.md("*Not computed yet (see the note at the top).*"))
     with mo.status.spinner(title="Comparing months with quarters..."):
         _agree_table = cached(RUN, _name, _agree, RECORDS)
     mo.ui.table(_agree_table.round(3), selection=None, pagination=False) if len(_agree_table) \
@@ -519,7 +467,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, REPO, RUN, alt, gpd, mo, pd, pq, pv, quarter, rule):
+def _(PANEL, REPO, RUN, alt, gpd, mo, pd, pq, pv, quarter, rule, thin):
     _path = pv.layer_path(PANEL, "quarterly", "postprocess", quarter.value)
     _flags = pq.read_table(_path, columns=["chip_id", rule.value])
     _ids = _flags.filter(_flags[rule.value].fill_null(False))["chip_id"].to_numpy()
@@ -537,7 +485,8 @@ def _(PANEL, REPO, RUN, alt, gpd, mo, pd, pq, pv, quarter, rule):
             _rings.append(pd.DataFrame({"lon": _x, "lat": _y, "ring": f"{_n}-{len(_rings)}", "order": range(len(_x))}))
     _scale = dict(scale=alt.Scale(zero=False))
     _pick = alt.selection_point(name="chips", fields=["chip_id"], on="click", toggle="event.shiftKey")
-    _points = alt.Chart(detected).mark_circle(size=14, color="#eb6834").add_params(_pick).encode(
+    _shown, _note = thin(detected)
+    _points = alt.Chart(_shown).mark_circle(size=14, color="#eb6834").add_params(_pick).encode(
         x=alt.X("lon:Q", title="longitude", **_scale), y=alt.Y("lat:Q", title="latitude", **_scale),
         tooltip=["chip_id", "subregion", alt.Tooltip("confidence:Q", format=".3f"), alt.Tooltip("n_clear:Q", format=".1f")])
     _layers = [_points]
@@ -547,7 +496,7 @@ def _(PANEL, REPO, RUN, alt, gpd, mo, pd, pq, pv, quarter, rule):
     _rule_name = [k for k, v in rule.options.items() if v == rule.value][0]
     map_chart = mo.ui.altair_chart(
         alt.layer(*_layers).properties(width="container", height=520,
-                                       title=f"{len(detected):,} chips detected ({_rule_name}), {quarter.value}").interactive(),
+                                       title=f"{len(detected):,} chips detected ({_rule_name}), {quarter.value}" + (f" ({_note})" if _note else "")).interactive(),
         chart_selection=False, legend_selection=False)
     map_chart
     return (map_chart,)
@@ -559,8 +508,8 @@ def _(mo):
     ## 9. Following chips through time
 
     Every period holds the same chips, so a chip can be followed from month to month and
-    quarter to quarter. The chips shown are the ones selected in the table of section 2 or on
-    the map, plus any IDs typed here. With nothing selected, the five strongest detections of
+    quarter to quarter. The chips shown are the ones clicked on the map, plus any IDs typed
+    here (the IDs in the table of section 2 work too). With nothing selected, the five strongest detections of
     the chosen quarter are shown.
     """)
     return
@@ -574,9 +523,8 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, chip_input, detected, example_table, map_chart, mo, np, pv, quarter):
+def _(PANEL, chip_input, detected, map_chart, mo, np, pv, quarter):
     _ids = []
-    _ids += [int(x) for x in getattr(example_table.value, "chip_id", [])]   # text in the table
     _sel = map_chart.apply_selection(detected)
     if len(_sel) < len(detected):                    # nothing clicked = everything "selected"
         _ids += [int(x) for x in _sel["chip_id"]]
@@ -633,7 +581,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, RUN, alt, mo, pq, pv, quarter):
+def _(PANEL, RUN, alt, mo, pq, pv, quarter, thin):
     _pp = pq.read_table(pv.layer_path(PANEL, "quarterly", "postprocess", quarter.value),
                         columns=["chip_id", "kth_km_loose", "kth_km_geo_loose"]).to_pandas()
     _cat = _pp[_pp["kth_km_loose"].notna()]
@@ -642,12 +590,13 @@ def _(PANEL, RUN, alt, mo, pq, pv, quarter):
     _cat["ratio"] = _cat["kth_km_loose"] / _cat["kth_km_geo_loose"]
     _flip = int(((_cat["kth_km_loose"] > 3.0) != (_cat["kth_km_geo_loose"] > 3.0)).sum())
     mo.vstack([
-        (alt.Chart(_cat).mark_circle(size=12, opacity=0.5, color="#2a78d6").encode(
+        (alt.Chart(thin(_cat)[0]).mark_circle(size=12, opacity=0.5, color="#2a78d6").encode(
             x=alt.X("lon:Q", title="longitude", scale=alt.Scale(zero=False)),
             y=alt.Y("ratio:Q", title="AMW's distance / distance on the Earth", scale=alt.Scale(zero=False)),
             tooltip=["chip_id", alt.Tooltip("kth_km_loose:Q", format=".2f"), alt.Tooltip("kth_km_geo_loose:Q", format=".2f")])
          + alt.Chart().mark_rule(color="#8a8984").encode(y=alt.datum(1))).properties(width="container", height=260).interactive(),
-        mo.md(f"{len(_cat):,} chips in the catalogue; the ratio runs from {_cat['ratio'].min():.3f} to {_cat['ratio'].max():.3f}. "
+        mo.md(f"{len(_cat):,} chips in the catalogue; the ratio runs from {_cat['ratio'].min():.3f} to {_cat['ratio'].max():.3f}"
+              f"{' (the chart is ' + thin(_cat)[1] + ')' if thin(_cat)[1] else ''}. "
               f"{_flip} would switch between isolated and not if the rule used the distance on the Earth."),
     ])
     return
