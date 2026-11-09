@@ -7,7 +7,7 @@ Two things live here:
   notebooks' run picker.
 * `cached`: compute a whole-run table once and keep it in <run>/summaries/, so the
   notebooks open in seconds for everyone who views them. Whoever can write to the run
-  folder (the run's owner, or her summaries job) fills the cache; a viewer who can only
+  folder (the run's owner, or the summaries job) fills the cache; a viewer who can only
   read it gets the stored table, or, if there is none yet, computes it in memory and
   writes nothing.
 """
@@ -97,3 +97,27 @@ def cached(run: Path, name: str, compute: Callable[[], object], inputs: Iterable
         except OSError:
             pass
     return value
+
+
+# A chart sends every row it draws to the browser, and marimo refuses outputs above a few
+# megabytes (8 MB). A full run has hundreds of thousands of chips per quarter, so point charts
+# draw a random sample of at most this many rows and say so in their title.
+MAX_POINTS = 10_000
+
+
+def thin(df: pd.DataFrame, n: int = MAX_POINTS, every: str | None = None) -> tuple[pd.DataFrame, str]:
+    """At most `n` rows of `df` for a chart, and a note saying how many were left out.
+
+    Without `every`, a random sample (the same one each time). With `every`, a column name:
+    rows are kept at even steps within each value of that column, in their order, so a
+    line per task stays a line.
+    """
+    if len(df) <= n:
+        return df, ""
+    if every is None:
+        out = df.sample(n, random_state=0)
+    else:
+        step = -(-len(df) // n)                                   # ceiling division
+        out = df[df.groupby(every).cumcount() % step == 0]
+    return out, f"showing {len(out):,} of {len(df):,}, picked at random" if every is None else \
+        f"showing one in {step} of {len(df):,} points"

@@ -680,7 +680,7 @@ def _(Period, RAW, RUN, STATUS_FILES, alt, cached, chips_of_tiles, ds, focus, js
         _lines.append(f"`{_c}`, sum of the months against the quarter, over {len(_diff):,} chips: largest difference "
                       f"{_diff.max():.4f}; equal within 0.001 for {(_diff <= 1e-3).mean():.3%} ({int((_diff > 1e-3).sum()):,} chips differ).")
     _cross = pd.crosstab(_three["conf_q"] > RAW, _three["conf_max_m"] > RAW, rownames=["quarter > 0.4"], colnames=["any month > 0.4"])
-    _plot = _three.sample(min(len(_three), 20_000), random_state=0)
+    _plot = _three[["conf_mean_m", "conf_q", "n_clear_m", "n_clear_q"]].sample(min(len(_three), 10_000), random_state=0)
     _a = alt.Chart(_plot).mark_circle(size=6, opacity=0.3).encode(
         x=alt.X("conf_mean_m:Q", title="mean of the monthly scores"), y=alt.Y("conf_q:Q", title="quarterly score"))
     _b = alt.Chart(_plot).mark_circle(size=6, opacity=0.3).encode(

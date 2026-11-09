@@ -299,13 +299,17 @@ branch. The same steps work for them (their guide: `notebooks/README.md`).
 
 ```bash
 sbatch cluster/view.sbatch                                  # or: sbatch cluster/view.sbatch $RUN
-cat ~/marimo-view-<JOBID>.out                               # after ~20 s: the node, the port, the address
+cat ~/marimo-view-<JOBID>.out                               # after ~30 s: an ssh line and an address
 ```
-In VS Code: the **Ports** tab (next to Terminal) → **Forward a Port** → type `<node>:<port>` from
-the file → open the `http://localhost:...` address from the file in your browser.
+Paste the `ssh -N -L ...` line into a terminal **on your laptop** (Mac: the Terminal app) and
+leave it open, then open the `http://localhost:...` address in your normal browser (not VS
+Code's preview). "Address already in use" on the laptop: change the first number of the line
+(VS Code may already be forwarding that port) and use the new number in the address.
+Coauthors see `panel_overview` and `amw_comparison`; you, as the repository's owner, also see
+`explore_runs` and `run_performance`.
 
 To **edit** a notebook yourself (not view): in a job, `marimo edit notebooks/panel_overview.py
---host 0.0.0.0 --port <port> -- --run $RUN`, same forwarding. Changes are saved to the file;
+--host 0.0.0.0 --port <port> -- --run $RUN`, same tunnel. Changes are saved to the file;
 commit them like any code.
 
 **Updating the environment** after a change to `pyproject.toml`/`uv.lock` (after `git pull`):

@@ -9,38 +9,39 @@ Four marimo notebooks, each a plain Python file that opens as an interactive pag
 | `explore_runs.py` | the pipeline's quality control: task checks, the chip grid, border tiles, the panel against detect's output | Ruby |
 | `run_performance.py` | how fast a run went, what limited it, what the full plan costs | Ruby |
 
-They read a run folder and never change it. Settings (which run, which quarter, which
-detection rule, ...) are dropdowns and sliders at the top of each page.
+They read a run folder and never change it. Coauthors see the first two; Ruby's view also
+lists her two. The quarter, the detection rule and the threshold are dropdowns and a
+slider at the top of each page.
 
 ## On Goethe: viewing in the browser
 
-You need a Goethe login, VS Code with the **Remote - SSH** extension, and nothing else: no
-copy of the code, no Python setup, no git. Everything runs on Goethe with Ruby's shared
-environment and Ruby's copy of the code, and the data never leaves the cluster.
+You need a Goethe login and a terminal on your laptop (on a Mac: the Terminal app). No copy
+of the code, no Python, no git: everything runs on Goethe with Ruby's shared environment and
+Ruby's copy of the code, and the data never leaves the cluster.
 
-1. **Connect.** In VS Code, press F1 (or Cmd/Ctrl-Shift-P), choose *Remote-SSH: Connect to
-   Host...*, type `<your user>@goethe.hhlr-gu.de`, enter your password. A new window opens,
-   connected to Goethe.
-2. **Start the notebooks.** In that window, *Terminal → New Terminal*, then:
+1. **Start the notebooks.** Log in (`ssh <your user>@goethe.hhlr-gu.de`, or a VS Code
+   window connected to Goethe) and run:
    ```bash
    sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch
    ```
-   This asks the cluster for a compute node for two hours. After about 20 seconds:
+   This asks the cluster for a compute node for two hours. Wait half a minute, then:
    ```bash
-   cat ~/marimo-view-*.out
+   cat $(ls -t ~/marimo-view-*.out | head -1)
    ```
-   shows the node, a port, and an address.
-3. **Forward the port.** Open the *Ports* tab (next to *Terminal*), click *Forward a Port*,
-   and type the `node:port` from the file, for example `node17-003:21234`.
-4. **Open the address** from the file (`http://localhost:...?access_token=...`) in your
-   browser. You see the list of notebooks; click one.
+   It prints one `ssh -N -L ...` line and an address.
+2. **Connect your laptop to it.** Open a *second* terminal on your laptop, paste the
+   `ssh -N -L ...` line, type your password. Nothing more is printed; that is right, leave
+   the window open. If it says *Address already in use*, change the first number in the
+   line to any other between 20000 and 60000, and use that number in the address too.
+3. **Open the address** (`http://localhost:...?access_token=...`) in your normal browser,
+   not VS Code's preview. You see the list of notebooks; click one.
 
-When you are done, close the browser tab; the job ends by itself after two hours, or
-sooner with `scancel <job number>`. For a longer session:
+The first time a notebook opens for a run it can take a minute or two, while it reads the
+run (a spinner shows what it is doing). When you are done, close the browser tab and the
+`ssh` window; the job ends by itself after two hours, or sooner with `scancel <job number>`.
+For a longer session:
 `sbatch --partition=general1 --time=06:00:00 /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch`.
-
-A different run: add its folder at the end of the `sbatch` line, or pick it in the *Run*
-dropdown at the top of a notebook.
+A different run: add its folder at the end of the `sbatch` line.
 
 Every table has an *Export* button (CSV), and every chart a menu to save it as an image.
 
@@ -61,5 +62,9 @@ Sections that read the whole run (the checks, cloud cover per period, months aga
 quarters, the task statistics) store their result in `<run>/summaries/` the first time
 the run's owner opens them, or when `cluster/summaries.sbatch` runs. A stored summary is
 used until the run changes. A viewer without write access who opens a section before its
-summary exists gets a button to compute it in the browser instead; that works, but takes
-long on a full run and is not stored.
+summary exists gets it computed in memory instead; that works, but takes a while on a
+full run and is not stored, so run `summaries.sbatch` after each new period.
+
+Charts with one point per chip draw at most 10,000 points (a random sample, said in the
+chart's title); a browser cannot draw a full run's chips, and marimo refuses outputs over
+8 MB. The counts in the tables are always over every chip.

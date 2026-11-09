@@ -19,10 +19,10 @@ def _():
     sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
     import performance as perf
     from config import load_config
-    from notebook_kit import find_runs
+    from notebook_kit import find_runs, thin
 
     _ = alt.data_transformers.disable_max_rows()
-    return Path, alt, find_runs, load_config, mo, os, pd, perf
+    return Path, alt, find_runs, load_config, mo, os, pd, perf, thin
 
 
 @app.cell(hide_code=True)
@@ -110,16 +110,17 @@ def _(lines, mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, busy, measure, mo, task_filter):
+def _(alt, busy, measure, mo, task_filter, thin):
     mo.stop(busy.empty, mo.md("No progress lines: the `_log.txt` files are missing from this copy of the run."))
     _d = busy[busy["task"].isin(task_filter.value)] if task_filter.value else busy
+    _d, _note = thin(_d[["task", "time", measure.value]], every="task")
     _title = [k for k, v in measure.options.items() if v == measure.value][0]
     mo.ui.altair_chart(
         alt.Chart(_d).mark_line(point=alt.OverlayMarkDef(size=12), strokeWidth=1)
         .encode(x=alt.X("time:T", title="UTC"), y=alt.Y(f"{measure.value}:Q", title=_title),
                 color=alt.Color("task:N", legend=alt.Legend(columns=2, symbolLimit=40)),
                 tooltip=["task", "time:T", alt.Tooltip(f"{measure.value}:Q", format=".1f")])
-        .properties(height=320, width="container").interactive(bind_y=False),
+        .properties(height=320, width="container", title=_note).interactive(bind_y=False),
         chart_selection=False, legend_selection=True)
     return
 
@@ -137,9 +138,9 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, busy, mo, tasks):
+def _(alt, busy, mo, tasks, thin):
     mo.stop(busy.empty)
-    _points = alt.Chart(busy).mark_circle(size=14, opacity=0.5).encode(
+    _points = alt.Chart(thin(busy[["task", "time", "workers_busy", "scoring_busy"]])[0]).mark_circle(size=14, opacity=0.5).encode(
         x=alt.X("workers_busy:Q", title="download workers busy, %", scale=alt.Scale(domain=[0, 105])),
         y=alt.Y("scoring_busy:Q", title="scoring busy, %", scale=alt.Scale(domain=[0, 105])),
         color=alt.Color("task:N", legend=None), tooltip=["task", "time:T", "workers_busy", "scoring_busy"])

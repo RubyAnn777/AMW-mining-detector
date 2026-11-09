@@ -1,13 +1,14 @@
 #!/bin/bash
 # Open the notebooks in your browser, for coauthors and for Ruby. Starts a marimo server
-# on a compute node; you reach it through VS Code's port forwarding (or an ssh tunnel).
+# on a compute node; you reach it through an ssh tunnel from your laptop.
 #
 #     sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch            the run changed last
 #     sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch <run>      another run
 #     sbatch --time=06:00:00 --partition=general1 .../view.sbatch            longer than 2 hours
 #
-# Then: cat ~/marimo-view-<jobid>.out (after a few seconds). It prints the node and the
-# address to open. The server stops when the job's time is up, or with scancel <jobid>.
+# Then, after half a minute: cat ~/marimo-view-<jobid>.out. It prints one line to paste
+# into a terminal on your laptop and the address to open. The server stops when the job's
+# time is up, or with scancel <jobid>.
 #
 # Read-only for everyone but the run's owner: the notebooks open as apps (no code shown,
 # nothing editable), and they read Ruby's run folder without writing to it.
@@ -35,20 +36,32 @@ export TF_CPP_MIN_LOG_LEVEL=2 OMP_NUM_THREADS=8
 PORT=$(( 20000 + $(id -u) % 20000 ))                       # the same port for you every time
 TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(16))")
 NODE=$(hostname -s)
+# Coauthors get the two notebooks about the results; the repository's owner (Ruby) also
+# gets her quality checks and the run's speed.
+if [ -O "${VIEW_REPO}" ]; then
+    NOTEBOOKS=(notebooks/)
+else
+    NOTEBOOKS=(notebooks/panel_overview.py notebooks/amw_comparison.py)
+fi
+
 cat <<MSG
 The notebooks are starting on ${NODE} for run ${RUN}.
 
-1. In VS Code (connected to Goethe), open the PORTS tab next to TERMINAL,
-   click "Forward a Port" and type:   ${NODE}:${PORT}
-   (Without VS Code, run this on your laptop instead:
-    ssh -N -L ${PORT}:${NODE}:${PORT} ${USER}@goethe.hhlr-gu.de )
-2. Open in your browser:
-   http://localhost:${PORT}/?access_token=${TOKEN}
+1. On your laptop, open a terminal (on a Mac: the Terminal app) and paste:
+
+       ssh -N -L ${PORT}:${NODE}:${PORT} ${USER}@goethe.hhlr-gu.de
+
+   Type your Goethe password. Nothing more is printed: that is right, leave the window
+   open. (If it says "Address already in use", change the first ${PORT} to any other
+   number between 20000 and 60000, and use that number in step 2.)
+2. Open this in your normal browser (Chrome, Safari, Firefox; not VS Code's preview):
+
+       http://localhost:${PORT}/?access_token=${TOKEN}
 
 The server runs until $(squeue -h -j "${SLURM_JOB_ID}" -o %e 2>/dev/null | tr T ' ') (scancel ${SLURM_JOB_ID} stops it sooner).
 Keep this address to yourself: anyone on Goethe with it could open your session.
 
 MSG
 cd "${VIEW_REPO}"
-exec marimo run notebooks/ --host 0.0.0.0 --port "${PORT}" --headless \
+exec marimo run "${NOTEBOOKS[@]}" --host 0.0.0.0 --port "${PORT}" --headless \
      --token --token-password "${TOKEN}" --no-sandbox --session-ttl 600 -- --run "${RUN}"
