@@ -45,10 +45,9 @@ panel_pipeline/
     config.py periods.py grid.py lock.py provenance.py read_panel.py
                           (exception: `python panel_pipeline/lib/config.py` checks a config)
   checks/                 looking at results and measuring speed; nothing here writes a run
-    check_panel.py  panel_overview.ipynb   checks of an assembled panel, and a notebook to show it (A7)
-    explore_runs.ipynb      one run, streamed: tasks, checks, border tiles, the panel against
-                            detect, months against quarters, maps, compare.py's results
-    performance.ipynb + performance.py (a run's speed, limits, core-hours)
+    check_panel.py          the checks of an assembled panel (A7)
+    performance.py          a run's speed, limits, core-hours
+    (the notebooks that show all of this are in notebooks/ at the repository root)
     bench_scoring.py  bench_download.py  overlap/ (tile and chip overlaps)
     tests/                  unit tests; fake_run.py makes a tiny made-up run to try the notebooks on
   docs/                   everything written down about the pipeline; start at docs/README.md
@@ -65,7 +64,8 @@ panel_pipeline/
 amw_comparison/   our scores against AMW's published ones (own README)
 cluster/          Goethe job scripts (Part B)
 configs/          one committed config per run
-requirements/     pinned packages, one list per platform (A1)
+notebooks/        marimo notebooks: panel_overview, explore_runs, amw_comparison, run_performance
+pyproject.toml, uv.lock   the Python packages and their exact versions (A1)
 core/ scripts/ utils/ docs/   AMW's own code and documents, unchanged; we import four files from core/
 ```
 
@@ -79,24 +79,25 @@ repository root.
 
 ### A1. Environment
 
-Python 3.11 and the packages in `requirements/`. The pinned versions are the ones in
-AMW's `requirements-lock_2026-09-18.txt`, so a score on any machine comes from the
-same code.
+Python 3.11 and the packages in `pyproject.toml`, at the exact versions in `uv.lock`.
+Those are the versions of AMW's `requirements-lock_2026-09-18.txt`, so a score on any
+machine comes from the same code.
 
 ```bash
-# once, from the repository root (uv: https://docs.astral.sh/uv/ ; pip works too)
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip sync requirements/panel-macos.txt        # on Linux: requirements/panel-linux.txt
+# once, from the repository root (uv: https://docs.astral.sh/uv/)
+uv sync --locked                                # makes .venv/ with exactly what uv.lock lists
+source .venv/bin/activate
 earthengine authenticate                        # browser login, once per computer
-python -c "import tensorflow, ee, descarteslabs, geopandas, sklearn; print('ok')"
+python -c "import tensorflow, ee, descarteslabs, geopandas, sklearn, marimo; print('ok')"
 ```
 
-- `requirements/panel.in` lists what we need directly; the two `panel-*.txt` files are
-  the complete pinned lists generated from it, one per platform. Install the `.txt`,
-  never the `.in`. To change a package, edit `panel.in` and regenerate (the command is
-  in the file's header).
-- The venv folder `venv/` is ignored by git.
+- `pyproject.toml` lists what we need directly; `uv.lock` is every package with one exact
+  version, for the Mac and for Linux at once, written by uv. To add or change a package,
+  edit `pyproject.toml`, run `uv lock`, commit both files. `uv sync --locked` refuses to
+  install if the two files disagree, so nobody runs on an unrecorded set of packages.
+- The venv folder `.venv/` is ignored by git.
+- The notebooks: `marimo edit notebooks/panel_overview.py -- --run tests_output/<run>` to
+  work on one, `marimo run notebooks/ -- --run tests_output/<run>` to view them all.
 - Every command below is run from the repository root, with the venv active.
 
 ### A2. The config file
@@ -364,10 +365,10 @@ q = read_panel(run, "quarterly", periods=["2025Q2"], subregions=[2, 3],
                columns={"postprocess": ["det_stringent"]})   # a panel assembled with --subregions
 ```
 
-`panel_pipeline/checks/explore_runs.ipynb` reads one run this way, streamed so a big run
+`notebooks/explore_runs.py` reads one run this way, streamed so a big run
 fits a laptop: integrity checks per task, the border tiles (scored twice; which copy the
 panel kept), the assembled panel against detect's counts and values, months against their
-quarter, maps, and `compare.py`'s results against AMW; `checks/panel_overview.ipynb` (A7)
+quarter, maps, and `compare.py`'s results against AMW; `notebooks/panel_overview.py` (A7)
 shows the panel on its own. `python panel_pipeline/checks/tests/fake_run.py
 tests_output/fake_run` makes a tiny made-up run to try it on.
 Reading a whole period of the full Amazon this way needs ~18 GB of memory; on a laptop,
@@ -419,8 +420,8 @@ distance exactly for the chips in each catalogue, identical border copies, and e
 quarter's image counts equal to its months'. It prints one line per check and ends with
 `all checks passed` or the failing rows.
 
-`checks/panel_overview.ipynb` is the notebook to show: set `RUN` and `SUBREGIONS` in its first
-cell, then run all cells. It runs the checks, then shows detections per period, how well
+`notebooks/panel_overview.py` is the notebook to show: `marimo run notebooks/panel_overview.py
+-- --run <run>`, then pick the panel and quarter at the top. It shows the checks, then shows detections per period, how well
 each period was seen, detections by `n_clear`, months against their quarter, a map, AMW's
 distance against the geodesic one, and a few chips through time.
 
@@ -462,10 +463,11 @@ The full click-by-click version is in `panel_pipeline/docs/history/cluster_migra
    curl -LsSf https://astral.sh/uv/install.sh | sh
    export UV_CACHE_DIR=/work/<group>/<user>/cache/uv UV_PYTHON_INSTALL_DIR=/work/<group>/<user>/python
    uv python install 3.11
-   uv venv --python 3.11 /work/<group>/<user>/venvs/amw-panel
-   source /work/<group>/<user>/venvs/amw-panel/bin/activate
-   uv pip sync requirements/panel-linux.txt
+   export UV_PROJECT_ENVIRONMENT=/work/<group>/<user>/venvs/amw-panel   # goethe_env.sh sets all three later
+   cd ~/AMW-mining-detector && uv sync --locked
    ```
+   One environment for everyone: coauthors use this venv read-only (B9), so it must be
+   readable by the group: `chmod -R g+rX /work/<group>/<user>/venvs /work/<group>/<user>/python`.
 4. The service-account key in `~/.secrets/ee-amw-panel.json` (`chmod 600`), then
    `python cluster/check_login.py` on the login node, then once more inside a `test` job.
 5. Fill in `cluster/goethe_env.sh` (group, user, key path) and `source` it in every
@@ -531,7 +533,7 @@ task list continues them (verified 28 Oct 2026: four tasks stopped in 5 s).
 Measured on the first big run (27 Oct – 1 Nov 2026: 2025 Q1 and Q2 as quarters and as
 months, subregions 2 and 3, 703,000 tile-periods, 0 failed, about four days of three
 nodes). Until 26 Oct no request answered at all; the cause was in our code (B7, last
-row), not the network or a quota. `checks/performance.ipynb` reads all of the numbers
+row), not the network or a quota. `notebooks/run_performance.py` reads all of the numbers
 below off any run, from the task folders' `_log.txt` and `_status.json` and a saved
 `sacct` listing (`python panel_pipeline/checks/performance.py --run $RUN` prints them).
 
@@ -643,7 +645,7 @@ detect ~230 GB (`docs/findings.md` §7), so on a laptop copy a few periods or on
 | `DETECT ERROR: … written by detect.py before the quality columns of 23 Oct` | the folder holds parts from the older detect.py | score into a new run, or move that folder aside |
 | no request answers, anywhere, not even on a laptop: `TimeoutError` after 300 s, `workers busy 100%`, 0 tiles | an Earth Engine expression without a footprint (an `ee.Image.constant` in `quality_bands`, 26 Oct 2026) made Earth Engine open every Sentinel-2 image on the planet per tile | derive every band from the images themselves; `checks/bench_download.py --run $RUN --tiles 1` on the login node shows in seconds whether a request answers |
 
-### B8. A finished year: assemble, check, compare, notebooks
+### B8. A finished year: assemble, check, compare, summaries
 
 Once `status.py` shows every task of a year done (`#`), four jobs, all from the repository
 root. Each is safe to submit again: what is done is skipped.
@@ -652,9 +654,7 @@ root. Each is safe to submit again: what is done is skipped.
 RUN=/work/<group>/<user>/runs/<run>; YEAR=2026
 A=$(sbatch --parsable cluster/assemble.sbatch $RUN $YEAR)     # months + quarters side by side, then check_panel.py --year
 C=$(sbatch --parsable cluster/amw_compare.sbatch $RUN $YEAR)   # needs AMW's files in amw_comparison/data/amw/
-sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/panel_overview.ipynb $RUN
-sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/explore_runs.ipynb $RUN
-sbatch --dependency=afterok:$C cluster/notebook.sbatch amw_comparison/compare.ipynb $RUN YEAR=$YEAR
+sbatch --dependency=afterok:$A:$C cluster/summaries.sbatch $RUN   # the notebooks' summaries, for fast viewing
 ```
 
 - `assemble.sbatch` writes `<run>/panel/` (A7) for the year's months and quarters and
@@ -665,11 +665,35 @@ sbatch --dependency=afterok:$C cluster/notebook.sbatch amw_comparison/compare.ip
 - `amw_compare.sbatch` runs `compare.py --year`, which compares the year's quarters that
   have an AMW file (AMW publishes quarters from 2025 only). Results go to
   `<run>/amw_comparison/`; a later year adds its rows to the CSV files there.
-- `notebook.sbatch <notebook> $RUN [SETTING=value ...]` runs a notebook from top to bottom
-  and saves `<run>/reports/<notebook>_<date>_<time>.html` (and `.ipynb`). The settings are
-  the notebook's first-cell values that read the environment (`MAP_PERIOD=2026Q2`,
-  `YEAR=2026`, `FOCUS_QUARTER=2026Q3`, `SUBREGIONS="2 3"`, `CHECK_LAST_DAY=0`, ...).
+- `summaries.sbatch $RUN [quarter]` runs every notebook in `notebooks/` once as a script, which
+  stores what they read from the whole run in `<run>/summaries/` (group-readable). The
+  notebooks then open in seconds for everyone; nothing is rendered to HTML any more (B9).
 - `--parsable` makes `sbatch` print only the job's number, which `A=$( )` keeps;
   `--dependency=afterok:$A` starts a job only once job `$A` ended without error.
-- Copy the pages to the laptop and open them in a browser:
-  `rsync -av <user>@goethe.hhlr-gu.de:$RUN/reports/ ~/Desktop/reports/` (on the laptop).
+- Look at the results with `cluster/view.sbatch` (B9), in the browser, without copying anything.
+
+### B9. Looking at results on Goethe: the notebooks in the browser
+
+The notebooks in `notebooks/` are marimo notebooks: plain Python files that open as
+interactive pages. On Goethe they run next to the data, so nobody copies a run to a laptop.
+
+- **Setup, once (Ruby).** A read-only copy of the repository for viewers, and group read
+  access to it, the venv and the runs:
+  ```bash
+  git clone <repository> /work/<group>/<user>/amw-view      # update later with: git -C ... pull
+  chmod -R g+rX /work/<group>/<user>/amw-view /work/<group>/<user>/venvs /work/<group>/<user>/python /work/<group>/<user>/runs
+  ```
+  Ruby's own runs are written with the default permissions; `ls -l` shows `r` in the middle
+  group of `rwxr-x---` when the group can read.
+- **Viewing (anyone in the group).** `sbatch /work/<group>/<user>/amw-view/cluster/view.sbatch`
+  starts the notebooks on a compute node of the `test` partition for two hours and writes
+  `~/marimo-view-<jobid>.out` with the node, a port and the address to open; VS Code's
+  *Ports* tab forwards it to the laptop. The notebooks open as apps: no code, nothing
+  editable, nothing written into the run.
+- **Why a compute node.** The pages read parquet files of up to 145 million rows; that is
+  the heavy work the login node is not for. The `test` partition gives a node at once for
+  up to two hours.
+- **Summaries.** Sections that read the whole run (checks, cloud cover per period, the
+  task statistics) use what `summaries.sbatch` stored. Without it a viewer gets a button to
+  compute them in the browser, which takes long on a full run and is not stored for them.
+

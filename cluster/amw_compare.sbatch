@@ -8,7 +8,7 @@
 # not the panel, so it can run before, after or during assembly.
 # Writes <run>/amw_comparison/: chips_<quarter>.parquet per quarter, and inputs.csv,
 # joins.csv, amw_files.csv, where a later year adds its rows and keeps the earlier ones.
-# Then show it with: sbatch cluster/notebook.sbatch amw_comparison/compare.ipynb <run> YEAR=<year>
+# Then look at it in notebooks/amw_comparison.py (cluster/view.sbatch), after cluster/summaries.sbatch.
 #
 # Measured: ~2 min and 6.5 GB per subregion and quarter (README of amw_comparison/).
 #

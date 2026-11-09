@@ -380,7 +380,7 @@ git clone git@github.com:RubyAnn777/AMW-mining-detector.git ~/AMW-mining-detecto
 cd ~/AMW-mining-detector && git checkout pipeline-rebuild
 uv venv --python 3.11 /work/<group>/<user>/venvs/amw-detect
 source /work/<group>/<user>/venvs/amw-detect/bin/activate
-uv pip sync requirements/panel-linux.txt      # the cluster lock file (requirements/README.md)
+uv sync --locked                              # the lock file uv.lock (panel_pipeline/README.md A1)
 ```
 
 `~/.bashrc` is a file of commands your shell runs at every login. The two `export` lines
