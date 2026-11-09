@@ -77,5 +77,8 @@ deforestation-and-mining-*.json
 # show in an editor's file tree. Outputs, not code.
 /runs
 
+# marimo: per-user session snapshots; the notebooks keep their summaries in <run>/summaries/
+__marimo__/
+.venv/
 # Copies of cluster runs on a laptop (README_cluster.md, section 8b); data, not code.
 cluster_output/

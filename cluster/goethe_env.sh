@@ -8,9 +8,12 @@ GOETHE_USER="${USER}"                                    # your login name
 GOETHE_WORK="/work/${GOETHE_GROUP}/${GOETHE_USER}"
 
 # The Python environment (made once: README B2) and uv's folders, all on /work.
-source "${GOETHE_WORK}/venvs/amw-panel/bin/activate"
+# UV_PROJECT_ENVIRONMENT makes `uv sync` update this venv, not a .venv inside the repo,
+# so there is one environment, shared read-only with your coauthors.
+export UV_PROJECT_ENVIRONMENT="${GOETHE_WORK}/venvs/amw-panel"
 export UV_CACHE_DIR="${GOETHE_WORK}/cache/uv"
 export UV_PYTHON_INSTALL_DIR="${GOETHE_WORK}/python"
+source "${UV_PROJECT_ENVIRONMENT}/bin/activate"
 
 # Earth Engine: the service account's key file. AMW's gee.py reads this variable
 # (core/gee.py:69) and logs in as that account; without it, your own login is used.

@@ -73,12 +73,11 @@ python panel_pipeline/detect.py --run /work/goldmine/me/runs/aca --frequency qua
 
 ---
 
-Run this to set up the environment when not done!
+Setting up or updating the Python environment (from the repository root):
 
-# Mac
-uv pip sync requirements/panel-macos.txt
-# Goethe
-uv pip sync requirements/panel-linux.txt
+```bash
+uv sync --locked          # installs exactly what uv.lock lists; on Goethe into the shared venv on /work
+```
 
 
 ## 3. A run on the Goethe cluster, step by step
@@ -392,7 +391,8 @@ panel_pipeline/    OUR PIPELINE. The steps you run:
   README.md            the full reference for every option and column
 cluster/           Goethe scripts: goethe_env.sh, detect_tasks.sbatch, check_login.py
 configs/           one committed config per run
-requirements/      the exact Python packages, per platform
+pyproject.toml     the Python packages we use; uv.lock: their exact versions, Mac and Goethe
+notebooks/         the marimo notebooks (panel, run checks, AMW comparison, run speed)
 amw_comparison/    our scores compared with AMW's published ones (own README)
 models/            AMW's model (the CNN ensemble in use); tracked in git, no download needed
 data/boundaries/   the region files (Amazon_ACA subregions, test areas, Andes)

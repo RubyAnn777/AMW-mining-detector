@@ -5,7 +5,7 @@
 
 Works for any run: a small test area, one subregion, or the whole basin. Reads the run and
 AMW's files (amw_comparison/data/amw/), and writes a small results folder,
-<run>/amw_comparison/, that compare.ipynb shows:
+<run>/amw_comparison/, that notebooks/amw_comparison.py shows:
 
     inputs.csv               one row per task read (frequency, period, subregion): complete?
     amw_files.csv            AMW's files compared, with their fingerprint (AMW replaces files)

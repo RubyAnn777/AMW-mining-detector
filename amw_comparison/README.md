@@ -10,7 +10,7 @@ our three months are compared with AMW's quarter.
 ```
 amw_comparison/
 ├── compare.py      joins a run with AMW's files and writes <run>/amw_comparison/ (the results)
-├── compare.ipynb   runs the join if needed, then shows it: counts, scores, last day, border, months
+├── (notebook)      notebooks/amw_comparison.py shows the results: counts, scores, last day, border, months
 ├── last_day.py     are the differences under the scenes of the quarter's last day? (Earth Engine)
 ├── tests/          python -m unittest discover -s amw_comparison/tests
 └── data/amw/       AMW's files as you downloaded them (ignored by git)
@@ -31,28 +31,27 @@ All commands from the repository root, in the venv.
 `raw_detections/`, the `_t0.4` file of each quarter, into `amw_comparison/data/amw/`:
 `amazon_basin_Q125_t0.4.geojson` is 2025Q1, `amazon_basin_Q326_t0.4.geojson` 2026Q3.
 
-**2. Compare.** Open `compare.ipynb`, set `RUN` and `QUARTERS` in the first cell, *Run All*.
-The first time, section 1 runs the join and saves `<run>/amw_comparison/`; after that the
-notebook takes seconds (`REDO = True` joins again). The quick check is the test region (36
+**2. Compare.** Run the join (below), then look at it with
+`marimo run notebooks/amw_comparison.py -- --run <run>`; pick the quarter, threshold and
+subregions at the top. The notebook only reads `<run>/amw_comparison/`. The quick check is the test region (36
 tiles, under a minute); a whole-basin run needs its `plan/` and `detect/` folders on the laptop,
 and takes about 2 minutes and 6.5 GB of memory per subregion and quarter (measured on
 subregion 3, 18.4 M chips; the largest subregion has about 1.5 times as many).
 
-The same join as a command, for example inside a job on Goethe (then copy only the small results
-folder to the laptop and open the notebook there):
+The join:
 
 ```bash
 python amw_comparison/compare.py --run tests_output/aca_full_2026-10-23 --quarters 2025Q1 2025Q2
 python amw_comparison/compare.py --run <run> --year 2026     # the year's quarters that have an AMW file
 ```
 
-On Goethe, as a job, and the notebook as a web page (`panel_pipeline/README.md` B8):
-`sbatch cluster/amw_compare.sbatch $RUN 2026`, then
-`sbatch cluster/notebook.sbatch amw_comparison/compare.ipynb $RUN YEAR=2026`.
+On Goethe, as a job (`panel_pipeline/README.md` B8): `sbatch cluster/amw_compare.sbatch $RUN 2026`,
+then the notebook in the browser (B9).
 `inputs.csv`, `joins.csv` and `amw_files.csv` keep the rows of quarters compared earlier, so
 comparing 2025 after 2026 adds to them.
 
-**3. The last day** (needs Earth Engine): set `CHECK_LAST_DAY = True` in the notebook, or
+**3. The last day** (needs Earth Engine): `sbatch cluster/last_day_check.sbatch $RUN 2026` on Goethe
+(the notebook shows its `summary.txt` per quarter), or
 
 ```bash
 python amw_comparison/last_day.py --run tests_output/aca_full_2026-10-23 --quarter 2025Q1

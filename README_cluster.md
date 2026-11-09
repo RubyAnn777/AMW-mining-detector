@@ -236,40 +236,33 @@ ls -l amw_comparison/data/amw/                                # on Goethe: Q126,
 ```
 AMW publishes quarters only from 2025 on, so the AMW check exists for 2025 and 2026 only.
 
-**9c. Submit the jobs** (from `~/AMW-mining-detector`; copy all five lines at once)
+**9c. Submit the jobs** (from `~/AMW-mining-detector`; copy all three lines at once)
 ```bash
 A=$(sbatch --parsable cluster/assemble.sbatch $RUN $YEAR); echo "assemble job $A"
 C=$(sbatch --parsable cluster/amw_compare.sbatch $RUN $YEAR); echo "compare job $C"
-sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/panel_overview.ipynb $RUN
-sbatch --dependency=afterok:$A cluster/notebook.sbatch panel_pipeline/checks/explore_runs.ipynb $RUN
-sbatch --dependency=afterok:$C cluster/notebook.sbatch amw_comparison/compare.ipynb $RUN YEAR=$YEAR
+sbatch --dependency=afterok:$A:$C cluster/summaries.sbatch $RUN
 ```
 What the parts mean:
 - `assemble.sbatch` builds the panel for the year: months and quarters at the same time on one
   node, then runs `check_panel.py` on that year. Log: `assemble-<jobid>.out`. Estimate: 2-4 hours.
 - `amw_compare.sbatch` compares our quarters with AMW's, chip by chip. Log: `compare-<jobid>.out`.
   It reads the scores directly, so it runs at the same time as the assembly.
-- `notebook.sbatch` runs a notebook from top to bottom without anyone clicking, and saves it as a
-  web page in `$RUN/reports/`. Log: `notebook-<jobid>.out`.
+- `summaries.sbatch` runs the four notebooks once and stores what they read from the whole run
+  in `$RUN/summaries/`, so they open in seconds for you and your coauthors. Log:
+  `summaries-<jobid>.out`. Add a quarter at the end (`... summaries.sbatch $RUN 2026Q2`) to
+  also store that quarter's example rows and distributions.
 - `--parsable` makes sbatch print only the job number; `A=$( )` keeps it in `$A`.
-- `--dependency=afterok:$A` = "start only after job `$A` finished without error". Such a job shows
-  `PD (Dependency)` in `squeue` until then. If `$A` fails, it stays waiting forever: `scancel` it.
-- Settings for a notebook go at the end as `NAME=value`, e.g. `MAP_PERIOD=2026Q2` (panel_overview's
-  map quarter; default: the last one), `FOCUS_QUARTER=2026Q3` (explore_runs), `CHECK_LAST_DAY=0`
-  (compare: skip the Earth Engine last-day check).
+- `--dependency=afterok:$A:$C` = "start only after jobs `$A` and `$C` finished without error".
+  Such a job shows `PD (Dependency)` in `squeue` until then. If one fails, it waits forever: `scancel` it.
 
 **9d. Read the results**
 ```bash
 squeue --me                                    # wait until the jobs are gone
 tail -25 assemble-<JOBID>.out                  # ends with "all checks passed" and "done: assembly 0/0, checks 0"
 tail -8  compare-<JOBID>.out                   # one line per subregion and quarter; "should have matched" must be 0
-grep -E "done|FAILED" notebook-*.out           # "done, no errors" per notebook
-ls $RUN/reports/                               # the web pages
+grep -E "done|FAILED" summaries-*.out          # one "done" line per notebook
 ```
-Then ON THE MAC, copy the pages and double-click one to open it in the browser:
-```bash
-rsync -av grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_2026-11-01/reports/ ~/Desktop/amw_reports/
-```
+Then open the notebooks in the browser (section 10), on Goethe, with nothing copied.
 
 **9e. If something is refused**
 - `not assembled: ... N tile(s) failed`: those tiles failed every try. Either score them again
@@ -284,3 +277,37 @@ rsync -av grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_202
 
 **Next year:** `YEAR=2025`, then 9c again. 2026 is left exactly as it is; the notebooks then show
 both years.
+
+---
+
+## 10. Look at the results: the notebooks in the browser
+
+**Once, after the marimo change is merged** (sets up the environment and the viewers' copy):
+```bash
+cd ~/AMW-mining-detector && git pull && source cluster/goethe_env.sh
+uv sync --locked                                            # adds marimo to the venv, removes Jupyter; scoring packages unchanged
+git clone git@github.com:RubyAnn777/AMW-mining-detector.git /work/goldmine/grambauer/amw-view
+chmod -R g+rX /work/goldmine/grambauer/amw-view /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python /work/goldmine/grambauer/runs
+ls -ld /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python /work/goldmine/grambauer/runs/*   # each should show r-x in the middle
+```
+
+The notebooks run on Goethe, next to the data. The same steps work for your coauthors (their
+guide: `notebooks/README.md`).
+
+```bash
+cd /work/goldmine/grambauer/amw-view && git pull            # the viewers' copy of the code (once after each merge)
+sbatch cluster/view.sbatch                                  # or: sbatch cluster/view.sbatch $RUN
+cat ~/marimo-view-<JOBID>.out                               # after ~20 s: the node, the port, the address
+```
+In VS Code: the **Ports** tab (next to Terminal) → **Forward a Port** → type `<node>:<port>` from
+the file → open the `http://localhost:...` address from the file in your browser.
+
+To **edit** a notebook yourself (not view): in a job, `marimo edit notebooks/panel_overview.py
+--host 0.0.0.0 --port <port> -- --run $RUN`, same forwarding. Changes are saved to the file;
+commit them like any code.
+
+**Updating the environment** after a change to `pyproject.toml`/`uv.lock` (after `git pull`):
+```bash
+uv sync --locked                       # changes the shared venv on /work in place
+chmod -R g+rX /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python
+```

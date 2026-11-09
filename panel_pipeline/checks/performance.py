@@ -11,7 +11,7 @@ the copy of the run has it. (By hand, on the cluster:
 
 Prints one line per task (tiles, wall time, tiles/min, download median, what was busy),
 one per job (node, hours, core-hours, tiles scored in it) and the run's totals. The
-notebook next to it, `performance.ipynb`, shows the same numbers over time and what the
+notebook `notebooks/run_performance.py` shows the same numbers over time and what the
 full plan would cost at the measured pace. Reads only; works on a laptop copy of the run
 too (`rsync` the `detect/` folders, README B6: the log and status files are small).
 
@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -249,12 +250,21 @@ def find_jobs(run_dir: Path, sess: pd.DataFrame, path: Path | None = None,
                       f"cluster, see the module docstring)")
     since = (sess["started"].min() - pd.Timedelta(days=1)).strftime("%Y-%m-%d") if len(sess) \
         else "2026-01-01"
-    result = subprocess.run(["sacct", "--starttime", since, "-X", "-P", "--format", SACCT_FORMAT],
-                            capture_output=True, text=True)
+    # The jobs of whoever owns the run, not of whoever is reading it: a coauthor viewing
+    # Ruby's run must see Ruby's jobs.
+    owner = run_dir.owner()
+    result = subprocess.run(["sacct", "-u", owner, "--starttime", since, "-X", "-P",
+                             "--format", SACCT_FORMAT], capture_output=True, text=True)
     if result.returncode != 0 or not result.stdout.strip():
         return None, f"jobs listing: sacct failed ({result.stderr.strip()[:200]})"
-    path.write_text(result.stdout)
-    return jobs(path, cluster_tz), f"jobs listing: asked sacct (since {since}) and saved it as {path}"
+    try:
+        path.write_text(result.stdout)
+        saved = f"and saved it as {path}"
+    except OSError:                       # a viewer without write access: keep it in memory
+        saved = "(not saved: the run folder is read-only for you)"
+        path = Path(tempfile.mkstemp(suffix="_jobs.txt")[1])
+        path.write_text(result.stdout)
+    return jobs(path, cluster_tz), f"jobs listing: asked sacct for {owner}'s jobs since {since} {saved}"
 
 
 def assign_jobs(sess: pd.DataFrame, job_table: pd.DataFrame | None,
