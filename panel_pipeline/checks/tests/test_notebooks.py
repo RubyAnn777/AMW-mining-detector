@@ -18,7 +18,8 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np  # noqa: E402
-from notebook_kit import cached, find_runs, is_cached, thin  # noqa: E402
+import notebook_kit  # noqa: E402
+from notebook_kit import cached, find_runs, is_cached, stored, thin  # noqa: E402
 from fake_run import make_run  # noqa: E402
 
 NOTEBOOKS = ["panel_overview", "explore_runs", "amw_comparison", "run_performance"]
@@ -39,6 +40,23 @@ class CachedTest(unittest.TestCase):
             self.assertFalse(is_cached(run, "t", [source]))
             self.assertEqual(cached(run, "t", compute, [source])["x"][0], 2)
             self.assertEqual(len(calls), 2)
+
+
+class StoredTest(unittest.TestCase):
+    def test_the_browser_only_reads_and_a_script_computes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            compute = lambda: pd.DataFrame({"x": [1]})
+            original = notebook_kit.in_browser
+            try:
+                notebook_kit.in_browser = lambda: True
+                self.assertIsNone(stored(run, "t", compute, []))          # nothing stored: nothing computed
+                notebook_kit.in_browser = lambda: False
+                self.assertEqual(stored(run, "t", compute, [])["x"][0], 1)  # a script computes and stores
+                notebook_kit.in_browser = lambda: True
+                self.assertEqual(stored(run, "t", compute, [])["x"][0], 1)  # now the browser reads it
+            finally:
+                notebook_kit.in_browser = original
 
 
 class ThinTest(unittest.TestCase):

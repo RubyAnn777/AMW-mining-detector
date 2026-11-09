@@ -121,3 +121,30 @@ def thin(df: pd.DataFrame, n: int = MAX_POINTS, every: str | None = None) -> tup
         out = df[df.groupby(every).cumcount() % step == 0]
     return out, f"showing {len(out):,} of {len(df):,}, picked at random" if every is None else \
         f"showing one in {step} of {len(df):,} points"
+
+
+# What a section that reads the whole run shows in the browser before its summary is stored.
+NOT_STORED = ("*Not stored yet. This section reads the whole run, which takes too long to do while "
+              "you wait; Ruby stores it with `cluster/summaries.sbatch`.*")
+
+
+def in_browser() -> bool:
+    """True when the notebook is open as an app in a browser (view.sbatch, `marimo run`)."""
+    try:
+        import marimo as mo
+        return mo.app_meta().mode == "run"
+    except Exception:                   # not inside marimo
+        return False
+
+
+def stored(run: Path, name: str, compute: Callable[[], object], inputs: Iterable[Path]) -> object | None:
+    """Like `cached`, but in the browser only a stored result, or None if there is none.
+
+    For summaries that read every period of a run: on a full run they take many minutes,
+    and a page that computes them while it opens looks frozen. summaries.sbatch (which runs
+    the notebooks as scripts) and the editor compute and store them.
+    """
+    inputs = list(inputs)
+    if in_browser() and not is_cached(run, name, inputs):
+        return None
+    return cached(run, name, compute, inputs)

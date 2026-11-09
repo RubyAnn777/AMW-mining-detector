@@ -295,16 +295,16 @@ chmod -R g+rX /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python    
 
 The notebooks run on Goethe, next to the data, from your one copy of the repository. Your
 coauthors see whatever is checked out in it, so switch back to `main` when you're done on a
-branch. The same steps work for them (their guide: `notebooks/README.md`).
+branch. The same steps work for them (their guide: `notebooks/GUIDE.md`).
 
 ```bash
 sbatch cluster/view.sbatch                                  # or: sbatch cluster/view.sbatch $RUN
-cat ~/marimo-view-<JOBID>.out                               # after ~30 s: an ssh line and an address
+cat ~/marimo-view-<JOBID>.out                               # after ~30 s: node:port and an address
 ```
-Paste the `ssh -N -L ...` line into a terminal **on your laptop** (Mac: the Terminal app) and
-leave it open, then open the `http://localhost:...` address in your normal browser (not VS
-Code's preview). "Address already in use" on the laptop: change the first number of the line
-(VS Code may already be forwarding that port) and use the new number in the address.
+In VS Code: **Ports** tab → **Forward a Port** → the `node:port` from the file; or, without VS
+Code, the `ssh -N -L ...` line from the file in a terminal on your laptop. Then open the
+`http://localhost:...` address in your normal browser (not VS Code's preview).
+`scancel --name=amw-view` stops it.
 Coauthors see `panel_overview` and `amw_comparison`; you, as the repository's owner, also see
 `explore_runs` and `run_performance`.
 

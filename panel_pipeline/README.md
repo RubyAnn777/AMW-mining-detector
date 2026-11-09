@@ -688,8 +688,8 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
   group of `rwxr-x---` when the group can read.
 - **Viewing (anyone in the group).** `sbatch /home/<group>/<user>/AMW-mining-detector/cluster/view.sbatch`
   starts the notebooks on a compute node of the `test` partition for two hours and writes
-  `~/marimo-view-<jobid>.out` with an `ssh -N -L` line to paste into a terminal on the
-  laptop (the tunnel) and the address to open. Coauthors get `panel_overview` and
+  `~/marimo-view-<jobid>.out` with the node and port to forward (VS Code's *Ports* tab, or
+  the `ssh -N -L` line it prints) and the address to open (`notebooks/GUIDE.md`). Coauthors get `panel_overview` and
   `amw_comparison`; the repository's owner also gets `explore_runs` and `run_performance`.
   The notebooks open as apps: no code, nothing editable, nothing written into the run, and
   the run and panel come from the `sbatch` line rather than a dropdown.
@@ -697,8 +697,9 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
   the heavy work the login node is not for. The `test` partition gives a node at once for
   up to two hours.
 - **Summaries.** Sections that read the whole run (checks, cloud cover per period, the
-  task statistics) use what `summaries.sbatch` stored. Without it they are computed in
-  memory when the page opens, which takes a while on a full run and is not stored.
+  distributions) use what `summaries.sbatch` stored; in the browser they are only read
+  (`notebook_kit.stored`) and say *Not stored yet* until then, because computing them on
+  a full run takes many minutes and the page looks frozen meanwhile.
 - **Big charts.** A chart with one point per chip draws at most 10,000 of them
   (`notebook_kit.thin`, said in the chart's title): marimo refuses outputs over 8 MB, and
   the AMW score chart of a full quarter was 260 MB.

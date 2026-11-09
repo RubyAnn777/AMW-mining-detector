@@ -22,14 +22,14 @@ def _():
     sys.path.insert(0, str(REPO / "panel_pipeline" / "checks"))
     import panel_views as pv
     from check_panel import check_panel
-    from notebook_kit import MONTHLY, QUARTERLY, cached, thin
+    from notebook_kit import MONTHLY, NOT_STORED, QUARTERLY, cached, stored, thin
     from periods import Period
     from variables import dictionary, expand
 
     _ = alt.data_transformers.disable_max_rows()
     FREQ_COLOURS = alt.Scale(domain=["monthly", "quarterly"], range=[MONTHLY, QUARTERLY])
-    return (FREQ_COLOURS, Path, Period, REPO, alt, cached, check_panel, dictionary, expand,
-            gpd, mo, np, os, pd, pq, pv, thin)
+    return (FREQ_COLOURS, NOT_STORED, Path, Period, REPO, alt, cached, check_panel, dictionary, expand,
+            gpd, mo, np, os, pd, pq, pv, stored, thin)
 
 
 @app.cell(hide_code=True)
@@ -208,13 +208,16 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, Period, RUN, cached, mo, pd, periods, pv, quarter):
+def _(NOT_STORED, PANEL, Period, RUN, mo, pd, periods, pv, quarter, stored):
     _first = Period.parse(quarter.value).months()[0].tag
     _shown = [("quarterly", quarter.value)] + ([("monthly", _first)] if _first in periods["monthly"] else [])
     with mo.status.spinner(title="Reading every column of the period..."):
-        _stats = pd.concat({_t: cached(RUN, f"describe_{PANEL.name}_{_t}", lambda f=_f, t=_t: pv.describe(PANEL, f, t),
-                                       [pv.layer_path(PANEL, _f, "scores", _t).parent / "_record.json"])
-                            for _f, _t in _shown}, axis=1)
+        _parts = {_t: stored(RUN, f"describe_{PANEL.name}_{_t}", lambda f=_f, t=_t: pv.describe(PANEL, f, t),
+                             [pv.layer_path(PANEL, _f, "scores", _t).parent / "_record.json"])
+                  for _f, _t in _shown}
+    mo.stop(any(v is None for v in _parts.values()), mo.md(NOT_STORED + " (Stored for the quarter it was run for; "
+                                                           "`summaries.sbatch <run> <quarter>` adds others.)"))
+    _stats = pd.concat(_parts, axis=1)
     _stats.columns = [f"{t} {s}" for t, s in _stats.columns]
     mo.ui.table(_stats.round(3).reset_index(), selection=None, pagination=False)
     return
@@ -242,11 +245,12 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, RECORDS, RUN, cached, check_panel, mo):
+def _(NOT_STORED, PANEL, RECORDS, RUN, check_panel, mo, stored):
     _name = f"checks_{PANEL.name}"
     _subregions = None if PANEL.name == "panel" else [int(n) for n in PANEL.name.split("_")[2:]]
     with mo.status.spinner(title="Checking every period..."):
-        _report = cached(RUN, _name, lambda: check_panel(RUN, _subregions), RECORDS)
+        _report = stored(RUN, _name, lambda: check_panel(RUN, _subregions), RECORDS)
+    mo.stop(_report is None, mo.md(NOT_STORED))
     _summary = _report.groupby("check", sort=False).agg(periods=("ok", "size"), passed=("ok", "sum"), example=("detail", "first"))
     _failed = _report[~_report["ok"]]
     mo.vstack([
@@ -332,7 +336,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, RECORDS, RUN, cached, mo, np, pd, periods, pv):
+def _(FREQ_COLOURS, NOT_STORED, PANEL, RECORDS, RUN, alt, mo, np, pd, periods, pv, stored):
     def _seen():
         _rows = []
         for _f, _ts in periods.items():
@@ -346,7 +350,8 @@ def _(PANEL, RECORDS, RUN, cached, mo, np, pd, periods, pv):
 
     _name = f"seen_{PANEL.name}"
     with mo.status.spinner(title="Reading n_clear of every period..."):
-        seen = cached(RUN, _name, _seen, RECORDS)
+        seen = stored(RUN, _name, _seen, RECORDS)
+    mo.stop(seen is None, mo.md(NOT_STORED))
     mo.vstack([
         alt.Chart(seen).mark_bar().encode(
             x=alt.X("period:N", sort=None, title=None),
@@ -376,7 +381,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(FREQ_COLOURS, PANEL, RECORDS, RUN, alt, cached, mo, np, pd, periods, pv):
+def _(FREQ_COLOURS, NOT_STORED, PANEL, RECORDS, RUN, alt, mo, np, pd, periods, pv, stored):
     _edges = [0, 1e-9, 1, 3, 10, np.inf]
     _labels = ["none (0)", "under 1", "1 to 3", "3 to 10", "10 or more"]
 
@@ -400,7 +405,9 @@ def _(FREQ_COLOURS, PANEL, RECORDS, RUN, alt, cached, mo, np, pd, periods, pv):
 
     _name = f"by_seen_{PANEL.name}"
     with mo.status.spinner(title="Reading every period..."):
-        _table, _top = cached(RUN, _name, _by_seen, RECORDS)
+        _result = stored(RUN, _name, _by_seen, RECORDS)
+    mo.stop(_result is None, mo.md(NOT_STORED))
+    _table, _top = _result
     mo.vstack([
         alt.Chart(_table).mark_bar().encode(
             x=alt.X("n_clear:N", sort=_labels, title="clear scenes per pixel (n_clear)"),
@@ -428,7 +435,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(PANEL, Period, RECORDS, RUN, cached, mo, np, pd, periods, pv):
+def _(NOT_STORED, PANEL, Period, RECORDS, RUN, mo, np, pd, periods, pv, stored):
     def _agree():
         _rows = []
         for _q in periods["quarterly"]:
@@ -448,7 +455,8 @@ def _(PANEL, Period, RECORDS, RUN, cached, mo, np, pd, periods, pv):
 
     _name = f"agree_{PANEL.name}"
     with mo.status.spinner(title="Comparing months with quarters..."):
-        _agree_table = cached(RUN, _name, _agree, RECORDS)
+        _agree_table = stored(RUN, _name, _agree, RECORDS)
+    mo.stop(_agree_table is None, mo.md(NOT_STORED))
     mo.ui.table(_agree_table.round(3), selection=None, pagination=False) if len(_agree_table) \
         else mo.md("No quarter has all three of its months assembled yet.")
     return
