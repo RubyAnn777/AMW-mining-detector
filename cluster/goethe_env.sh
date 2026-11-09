@@ -14,6 +14,9 @@ export UV_PROJECT_ENVIRONMENT="${GOETHE_WORK}/venvs/amw-panel"
 export UV_CACHE_DIR="${GOETHE_WORK}/cache/uv"
 export UV_PYTHON_INSTALL_DIR="${GOETHE_WORK}/python"
 source "${UV_PROJECT_ENVIRONMENT}/bin/activate"
+# The login nodes cap how many threads one user may start; uv's default (one per core)
+# can hit the cap and crash with "Resource temporarily unavailable".
+export UV_CONCURRENT_INSTALLS=4 RAYON_NUM_THREADS=4
 
 # Earth Engine: the service account's key file. AMW's gee.py reads this variable
 # (core/gee.py:69) and logs in as that account; without it, your own login is used.

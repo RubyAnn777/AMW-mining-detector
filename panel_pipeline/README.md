@@ -677,15 +677,16 @@ sbatch --dependency=afterok:$A:$C cluster/summaries.sbatch $RUN   # the notebook
 The notebooks in `notebooks/` are marimo notebooks: plain Python files that open as
 interactive pages. On Goethe they run next to the data, so nobody copies a run to a laptop.
 
-- **Setup, once (Ruby).** A read-only copy of the repository for viewers, and group read
-  access to it, the venv and the runs:
+- **Setup, once (Ruby).** Group read access to the repository (one copy, the one in
+  `/home`), the venv and the runs; the home folder itself only lets the group pass through:
   ```bash
-  git clone <repository> /work/<group>/<user>/amw-view      # update later with: git -C ... pull
-  chmod -R g+rX /work/<group>/<user>/amw-view /work/<group>/<user>/venvs /work/<group>/<user>/python /work/<group>/<user>/runs
+  chmod g+x ~ && chmod -R g+rX ~/AMW-mining-detector       # ~/.secrets stays private
+  chmod -R g+rX /work/<group>/<user>/venvs /work/<group>/<user>/python /work/<group>/<user>/runs
   ```
+  Viewers see whatever is checked out there, so keep it on `main` outside working sessions.
   Ruby's own runs are written with the default permissions; `ls -l` shows `r` in the middle
   group of `rwxr-x---` when the group can read.
-- **Viewing (anyone in the group).** `sbatch /work/<group>/<user>/amw-view/cluster/view.sbatch`
+- **Viewing (anyone in the group).** `sbatch /home/<group>/<user>/AMW-mining-detector/cluster/view.sbatch`
   starts the notebooks on a compute node of the `test` partition for two hours and writes
   `~/marimo-view-<jobid>.out` with the node, a port and the address to open; VS Code's
   *Ports* tab forwards it to the laptop. The notebooks open as apps: no code, nothing

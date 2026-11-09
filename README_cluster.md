@@ -282,20 +282,22 @@ both years.
 
 ## 10. Look at the results: the notebooks in the browser
 
-**Once, after the marimo change is merged** (sets up the environment and the viewers' copy):
+**Once, after the marimo change is merged** (sets up the environment and lets your group read the code):
 ```bash
 cd ~/AMW-mining-detector && git pull && source cluster/goethe_env.sh
 uv sync --locked                                            # adds marimo to the venv, removes Jupyter; scoring packages unchanged
-git clone git@github.com:RubyAnn777/AMW-mining-detector.git /work/goldmine/grambauer/amw-view
-chmod -R g+rX /work/goldmine/grambauer/amw-view /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python /work/goldmine/grambauer/runs
-ls -ld /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python /work/goldmine/grambauer/runs/*   # each should show r-x in the middle
+chmod g+x ~                                                 # the group may pass through your home, but not list it
+chmod -R g+rX ~/AMW-mining-detector                         # ... and read the repository
+ls -ld ~ ~/AMW-mining-detector ~/.secrets                   # ~: --x in the middle; repo: r-x; .secrets: --- (private)
+ls -ld /work/goldmine/grambauer/{venvs,python,runs} /work/goldmine/grambauer/runs/*   # each should show r-x in the middle
+chmod -R g+rX /work/goldmine/grambauer/venvs /work/goldmine/grambauer/python         # only if a line above doesn't
 ```
 
-The notebooks run on Goethe, next to the data. The same steps work for your coauthors (their
-guide: `notebooks/README.md`).
+The notebooks run on Goethe, next to the data, from your one copy of the repository. Your
+coauthors see whatever is checked out in it, so switch back to `main` when you're done on a
+branch. The same steps work for them (their guide: `notebooks/README.md`).
 
 ```bash
-cd /work/goldmine/grambauer/amw-view && git pull            # the viewers' copy of the code (once after each merge)
 sbatch cluster/view.sbatch                                  # or: sbatch cluster/view.sbatch $RUN
 cat ~/marimo-view-<JOBID>.out                               # after ~20 s: the node, the port, the address
 ```

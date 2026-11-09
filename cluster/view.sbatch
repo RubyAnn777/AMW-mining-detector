@@ -2,8 +2,8 @@
 # Open the notebooks in your browser, for coauthors and for Ruby. Starts a marimo server
 # on a compute node; you reach it through VS Code's port forwarding (or an ssh tunnel).
 #
-#     sbatch /work/goldmine/grambauer/amw-view/cluster/view.sbatch            the run changed last
-#     sbatch /work/goldmine/grambauer/amw-view/cluster/view.sbatch <run>      another run
+#     sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch            the run changed last
+#     sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch <run>      another run
 #     sbatch --time=06:00:00 --partition=general1 .../view.sbatch            longer than 2 hours
 #
 # Then: cat ~/marimo-view-<jobid>.out (after a few seconds). It prints the node and the
@@ -19,7 +19,7 @@
 #SBATCH --output=/dev/null
 
 SHARED="${AMW_SHARED:-/work/goldmine/grambauer}"           # Ruby's folder on /work
-VIEW_REPO="${VIEW_REPO:-${SHARED}/amw-view}"               # the read-only copy of the repository
+VIEW_REPO="${VIEW_REPO:-/home/goldmine/grambauer/AMW-mining-detector}"   # Ruby's repository, readable by the group
 VENV="${VENV:-${SHARED}/venvs/amw-panel}"                  # the one shared Python environment
 RUN="${1:-$(ls -1dt "${SHARED}"/runs/*/ 2>/dev/null | head -1)}"   # default: the run changed last
 RUN="${RUN%/}"
