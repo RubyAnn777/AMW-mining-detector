@@ -7,8 +7,9 @@
 # Runs each marimo notebook in notebooks/ once from top to bottom, as a plain Python
 # script. Whatever a notebook reads from the whole run (the checks, cloud cover per period,
 # months against quarters, the task statistics, ...) is stored in <run>/summaries/, which
-# your coauthors can read but not write. Without it, a section that needs a stored summary
-# shows a button instead, and computing it in the browser takes a long time on a full run.
+# your coauthors can read but not write. Without it, those sections of panel_overview say
+# "Not stored yet" in the browser: on a full run they take too long to compute while a
+# page opens.
 #
 # Submit it after assemble.sbatch and amw_compare.sbatch (cheat sheet section 9). Safe to
 # submit again: a summary is only recomputed when the run changed since it was stored.

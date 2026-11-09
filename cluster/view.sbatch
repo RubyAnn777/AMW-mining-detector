@@ -48,7 +48,8 @@ cat <<MSG
 The notebooks are starting on ${NODE} for run ${RUN}.
 
 In VS Code (connected to Goethe):
-  1. Ports tab (next to Terminal) > Forward a Port > type:   ${NODE}:${PORT}
+  1. Ports tab (next to Terminal): right-click any row from an earlier session >
+     Stop Forwarding Port. Then Forward a Port > type:   ${NODE}:${PORT}
   2. Open in your browser (Chrome, Safari, Firefox; not VS Code's preview):
 
        http://localhost:${PORT}/?access_token=${TOKEN}
@@ -56,7 +57,7 @@ In VS Code (connected to Goethe):
      If the Ports tab shows another number under "Forwarded Address", use that one.
 
 Without VS Code: in a terminal on your laptop run the line below, leave it open, and
-open the same address:
+open the same address (close the window of an earlier session first):
 
        ssh -N -L ${PORT}:${NODE}:${PORT} ${USER}@goethe.hhlr-gu.de
 
@@ -64,6 +65,9 @@ The server runs until $(squeue -h -j "${SLURM_JOB_ID}" -o %e 2>/dev/null | tr T 
 Keep this address to yourself: anyone on Goethe with it could open your session.
 
 MSG
+[ -d "${RUN}/summaries" ] || echo "Note: no summaries stored for this run yet, so some sections say \"Not stored yet\".
+Ruby: sbatch cluster/summaries.sbatch ${RUN}
+"
 cd "${VIEW_REPO}"
 exec marimo run "${NOTEBOOKS[@]}" --host 0.0.0.0 --port "${PORT}" --headless \
      --token --token-password "${TOKEN}" --no-sandbox --session-ttl 600 -- --run "${RUN}"

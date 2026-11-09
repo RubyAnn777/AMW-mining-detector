@@ -33,12 +33,13 @@ made-up run to try them on.
 
 ## How they stay fast
 
-Sections that read the whole run (the checks, cloud cover per period, months against
-quarters, the task statistics) store their result in `<run>/summaries/` the first time
-the run's owner opens them, or when `cluster/summaries.sbatch` runs. A stored summary is
-used until the run changes. A viewer without write access who opens a section before its
-summary exists gets it computed in memory instead; that works, but takes a while on a
-full run and is not stored, so run `summaries.sbatch` after each new period.
+Sections that read every period of the run (the checks, cloud cover per period, months
+against quarters, the distributions) are computed by `cluster/summaries.sbatch`, which
+runs the notebooks as scripts, and stored in `<run>/summaries/`. In the browser they are
+only read; before they are stored they say *Not stored yet*, so a page never sits
+computing for many minutes. A stored summary is used until the run changes; run
+`summaries.sbatch` after each new period. (`explore_runs` still computes for its owner
+in the browser, and in `marimo edit` everything is computed.)
 
 Charts with one point per chip draw at most 10,000 points (a random sample, said in the
 chart's title); a browser cannot draw a full run's chips, and marimo refuses outputs over

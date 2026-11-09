@@ -697,8 +697,9 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
   the heavy work the login node is not for. The `test` partition gives a node at once for
   up to two hours.
 - **Summaries.** Sections that read the whole run (checks, cloud cover per period, the
-  task statistics) use what `summaries.sbatch` stored. Without it they are computed in
-  memory when the page opens, which takes a while on a full run and is not stored.
+  distributions) use what `summaries.sbatch` stored; in the browser they are only read
+  (`notebook_kit.stored`) and say *Not stored yet* until then, because computing them on
+  a full run takes many minutes and the page looks frozen meanwhile.
 - **Big charts.** A chart with one point per chip draws at most 10,000 of them
   (`notebook_kit.thin`, said in the chart's title): marimo refuses outputs over 8 MB, and
   the AMW score chart of a full quarter was 260 MB.

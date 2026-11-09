@@ -52,24 +52,30 @@ with `http://localhost:`.
 ### 3. Forward the port
 
 1. Click the **Ports** tab next to **Terminal** at the bottom of VS Code.
-2. Click **Forward a Port** and type the machine and port from the instructions, for
+2. If a row from last time is still there, right-click it and choose **Stop Forwarding
+   Port**. It points to a machine that is gone, and it would hold the port.
+3. Click **Forward a Port** and type the machine and port from the instructions, for
    example `node17-001:20123`. Press Enter.
 
 ### 4. Open the notebooks
 
 Copy the `http://localhost:...?access_token=...` address from the instructions into your
 normal browser (Chrome, Safari or Firefox), not VS Code's preview. You see two notebooks.
-Click one. The first time it opens, it can take a minute or two to read the run.
+Click one.
 
 ### 5. Stop
 
-When you are done, close the browser tab and run this in the terminal:
+When you are done:
 
-```bash
-scancel --name=amw-view
-```
+1. Close the browser tab.
+2. In the **Ports** tab, right-click the row and choose **Stop Forwarding Port**.
+3. In the terminal, stop the job. This also stops the notebooks on the cluster:
+   ```bash
+   scancel --name=amw-view
+   ```
+4. Close the VS Code window.
 
-Then close the VS Code window. If you skip this, the job stops by itself after two hours.
+If you skip step 3, the job stops by itself after two hours.
 
 ## Reading the notebooks
 
