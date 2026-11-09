@@ -688,8 +688,8 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
   group of `rwxr-x---` when the group can read.
 - **Viewing (anyone in the group).** `sbatch /home/<group>/<user>/AMW-mining-detector/cluster/view.sbatch`
   starts the notebooks on a compute node of the `test` partition for two hours and writes
-  `~/marimo-view-<jobid>.out` with an `ssh -N -L` line to paste into a terminal on the
-  laptop (the tunnel) and the address to open. Coauthors get `panel_overview` and
+  `~/marimo-view-<jobid>.out` with the node and port to forward (VS Code's *Ports* tab, or
+  the `ssh -N -L` line it prints) and the address to open (`notebooks/GUIDE.md`). Coauthors get `panel_overview` and
   `amw_comparison`; the repository's owner also gets `explore_runs` and `run_performance`.
   The notebooks open as apps: no code, nothing editable, nothing written into the run, and
   the run and panel come from the `sbatch` line rather than a dropdown.
