@@ -16,14 +16,14 @@ detection rule, ...) are dropdowns and sliders at the top of each page.
 
 You need a Goethe login, VS Code with the **Remote - SSH** extension, and nothing else: no
 copy of the code, no Python setup, no git. Everything runs on Goethe with Ruby's shared
-environment, and the data never leaves the cluster.
+environment and Ruby's copy of the code, and the data never leaves the cluster.
 
 1. **Connect.** In VS Code, press F1 (or Cmd/Ctrl-Shift-P), choose *Remote-SSH: Connect to
    Host...*, type `<your user>@goethe.hhlr-gu.de`, enter your password. A new window opens,
    connected to Goethe.
 2. **Start the notebooks.** In that window, *Terminal → New Terminal*, then:
    ```bash
-   sbatch /work/goldmine/grambauer/amw-view/cluster/view.sbatch
+   sbatch /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch
    ```
    This asks the cluster for a compute node for two hours. After about 20 seconds:
    ```bash
@@ -37,7 +37,7 @@ environment, and the data never leaves the cluster.
 
 When you are done, close the browser tab; the job ends by itself after two hours, or
 sooner with `scancel <job number>`. For a longer session:
-`sbatch --partition=general1 --time=06:00:00 /work/goldmine/grambauer/amw-view/cluster/view.sbatch`.
+`sbatch --partition=general1 --time=06:00:00 /home/goldmine/grambauer/AMW-mining-detector/cluster/view.sbatch`.
 
 A different run: add its folder at the end of the `sbatch` line, or pick it in the *Run*
 dropdown at the top of a notebook.
