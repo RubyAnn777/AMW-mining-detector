@@ -160,7 +160,61 @@ ssh grambauer@goethe.hhlr-gu.de 'ls -l <path>/*.parquet'   # look before copying
 
 ---
 
-## 9. A finished year: panel, checks, AMW comparison, summaries
+## 8b. Back up the run (after every scoring session)
+
+**Why.** Goethe has three storage places with different rules:
+
+| Place | Size | Backed up? | Use it for |
+|---|---|---|---|
+| `/home/goldmine/grambauer` (`~`) | 30 GB, slow | **yes, every night** | code, the key, the run's small records |
+| `/work/goldmine/...` | 24 TB shared by the group, fast | **no** | the run folder while scoring |
+| `/arc01`, `/arc02` | ≤ 10 TB per group, group leader requests it | no, but long-term | finished panels |
+
+The whole run lives on `/work`, so without these steps there is exactly one copy of the results,
+on the disk with no backup. The "delete after ~30 days" rule on `/work` is a request to tidy up,
+not an automatic purge, but a disk failure or cleanup would lose everything.
+
+What is in the run folder (sizes on 2026-11-09):
+
+| Folder | Size | Can it be rebuilt? |
+|---|---|---|
+| `detect/` | 88 GB | only by re-scoring: days of Earth Engine time. **Most important.** |
+| `panel/` | 78 GB | yes, from `detect/` with the assemble step (section 9), hours |
+| `plan/`, `run/`, `logs/`, `tasks_*.txt`, `_status.json` files | < 1 GB | not exactly. Small, keep them in `/home` |
+| `reports/`, `amw_comparison/` | ~20 MB | yes, by rerunning section 9 |
+
+**a) On Goethe: small records into the backed-up home folder (seconds)**
+
+```bash
+RUN=/work/goldmine/grambauer/runs/aca_full_2026-11-01            # EDIT for another run
+mkdir -p ~/runs_records/$(basename $RUN)
+rsync -av --include='*/' --include='_status.json' --include='*.yaml' --include='*.json' \
+  --include='tiles.csv' --include='*.txt' --include='logs/***' --exclude='*' \
+  $RUN/ ~/runs_records/$(basename $RUN)/
+```
+
+**b) On the Mac: the whole run (first time: hours; afterwards only what changed)**
+
+```bash
+df -h ~                                         # need ~180 GB free for everything, ~90 GB without panel/
+cd /Users/rubygrambauer/RA_Raji/AMW-mining-detector
+grep -qx 'cluster_output/' .gitignore || echo 'cluster_output/' >> .gitignore   # never commit the data
+rsync -av --progress --partial --exclude='_lock' \
+  grambauer@goethe.hhlr-gu.de:/work/goldmine/grambauer/runs/aca_full_2026-11-01/ \
+  /Users/rubygrambauer/RA_Raji/AMW-mining-detector/cluster_output/aca_full_2026-11-01/
+```
+- Short on space: add `--exclude='panel/'` (the panel can be rebuilt from `detect/`).
+- Broke off (wifi, laptop asleep)? Run the same line again: it continues where it stopped.
+- Run it again after every session: rsync only copies new and changed files, so it is quick.
+- Running it while jobs are still scoring is fine; the next run picks up what was added.
+
+**c) Once:** ask the group leader whether the group has `/arc` space
+(`df -h /arc0{1,2}/archive/goldmine` on a login node). A laptop is not a backup either; the final
+panels belong on `/arc` plus one copy off the cluster.
+
+---
+
+## 9. A finished year: panel, checks, AMW comparison, notebooks
 
 Do this once a year is fully scored. Example: 2026. For 2025 later, change only `YEAR=`.
 Every job here is safe to submit again: what is already done is skipped, other years are never touched.
