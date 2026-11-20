@@ -1,15 +1,16 @@
 #!/bin/bash
-# Which tiles has AMW ever found mining in, and how many of our 2025/2026 detections lie in
-# or next to them (amw_comparison/history.py, then notebooks/amw_history.py as a web page).
+# Which tiles has AMW ever detected mining in (any raw detection file), and how many of our
+# 2025/2026 detections lie in or next to them (amw_comparison/history.py, then notebooks/amw_history.py as a web page).
 #
 #     sbatch cluster/amw_history.sbatch <run folder>
 #     sbatch --dependency=afterok:<compare job> cluster/amw_history.sbatch <run folder>
 #                                       start only once amw_compare.sbatch has finished
 #
-# Needs AMW's cumulative record in amw_comparison/data/amw/amazon_basin_detections.geojson
-# on Goethe (copied from the laptop, not in git), and for the page, the compared quarters
+# Needs AMW's raw detection files, amazon_basin_<period>_t0.4.geojson (every year and quarter),
+# in amw_comparison/data/amw/ on Goethe (copied from the laptop, not in git), and for the page,
+# the compared quarters
 # (chips_<quarter>.parquet from amw_compare.sbatch).
-# Writes <run>/amw_comparison/history_tiles.parquet, history_tiles.geojson,
+# Writes <run>/amw_comparison/history_chips.parquet, history_tiles.parquet, history_tiles.geojson,
 # history_summary.json, and the page <run>/reports/amw_history.html.
 #
 # Estimate: a few minutes (one pass over plan/chips.parquet, then the rings).
@@ -26,8 +27,7 @@ RUN="${1:?${USAGE}}"
 RUN="${RUN%/}"
 source cluster/goethe_env.sh               # run sbatch from the repository root
 echo "$(date '+%F %T')  AMW history tiles for ${RUN}, code $(git rev-parse --short HEAD)"
-ls -l amw_comparison/data/amw/amazon_basin_detections.geojson \
-    || echo "missing: copy amazon_basin_detections.geojson into amw_comparison/data/amw/ first"
+ls -l amw_comparison/data/amw/amazon_basin_*_t0.4.geojson
 python -u amw_comparison/history.py --run "${RUN}"
 S=$?
 if [ ${S} -eq 0 ]; then

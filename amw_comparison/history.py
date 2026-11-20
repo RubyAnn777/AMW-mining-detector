@@ -1,42 +1,41 @@
-"""Which of our tiles has AMW ever found a mine in, and which tiles lie around them.
+"""Which of our tiles has AMW ever detected mining in, and which tiles lie around them.
 
     python amw_comparison/history.py --run <run>
     sbatch cluster/amw_history.sbatch <run>                  the same, on Goethe
 
-The question behind it: could we score only the tiles where AMW has found mining before
-(plus a ring of neighbours), and still find nearly every mine? notebooks/amw_history.py
-answers it for 2025 and 2026 with what this script writes.
+The question behind it: score first only the tiles where AMW has ever detected mining,
+plus rings of neighbours (priority 1), then the rest (priority 2). notebooks/amw_history.py
+shows how many of our 2025/2026 detections priority 1 holds.
 
-Reads
-    amw_comparison/data/amw/amazon_basin_detections.geojson   AMW's cumulative record
-    <run>/plan/tiles.csv, <run>/plan/chips.parquet            our tiles and chips
+"Ever detected" = listed in any of AMW's raw detection files (confidence > 0.4, before any
+postprocessing): amw_comparison/data/amw/amazon_basin_<period>_t0.4.geojson, every year and
+quarter that is there. Not the cumulative record (amazon_basin_detections.geojson), which is
+AMW's cleaned product (isolation thresholds, two-year confirmation), and not the Andes files.
 
 Writes <run>/amw_comparison/
-    history_tiles.parquet    one row per tile of the run: its key and number, its centre,
-                             how many AMW history chips it holds, the first year AMW found
-                             mining in it, and its ring for each history cut-off:
-                             ring_to<Y> = 0 if AMW found mining in the tile by year Y,
-                             1 if it touches such a tile, 2 one tile further, ...,
-                             MAX_RING + 1 if further away than that.
-    history_tiles.geojson    the same tiles' squares, those within MAX_RING of any AMW
-                             history (for QGIS: the IDs and boundaries of the tiles)
-    history_summary.json     how many AMW rows matched our chips, cut-offs, ring count
+    history_chips.parquet    the unique chip IDs of every location AMW ever detected: chip_id,
+                             tile, first_year, first_period, periods (how many files list it),
+                             annual_periods
+    history_tiles.parquet    one row per tile of the run: key and number, centre, country,
+                             history_chips, first_year, ring (0 = AMW detected mining in the
+                             tile, 1 = touches such a tile, ..., MAX_RING + 1 = further)
+    history_tiles.geojson    the squares of the tiles within MAX_RING rings (for QGIS)
+    history_summary.json     files read, how many AMW locations matched our chips
 
-How a location becomes a tile: AMW's rows carry no tile, only each chip's square. We
-compute AMW's location key from the square (centroid_key, as compare.py does) and look it
-up in plan/chips.parquet, which holds the same key for every chip we plan. The chip's
-chip_id then names its tile (chip_id // 1000). Where tiles overlap (UTM zone seams) a
-location can be in two tiles; both count.
+Location to chip: AMW's rows carry no chip ID, only each chip's square. We compute AMW's
+location key from the square (centroid_key, as compare.py does) and look it up in
+plan/chips.parquet; the chip_id then names its tile (chip_id // 1000). Where tiles overlap
+(UTM zone seams) a location is in two tiles; both count.
 
 Rings: a tile's square is grown by half a tile less than k tiles on each side, in its own
-UTM zone; every tile it overlaps is within ring k. Squares, not circles, so the eight
-tiles around a tile are ring 1. Done with the squares rather than tile numbers so that
-tiles across a UTM zone seam count as neighbours too.
+UTM zone; every tile it overlaps is within ring k. So the eight tiles around a tile are
+ring 1, also across a UTM zone seam.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -52,7 +51,7 @@ sys.path.insert(0, str(HERE))
 import compare  # noqa: E402  (amw_comparison/compare.py: run folders, tile numbers)
 from postprocess import centroid_key  # noqa: E402  (AMW code; compare.py put core/ on the path)
 
-CUMULATIVE = compare.AMW_DIR / "amazon_basin_detections.geojson"
+COUNTRIES = REPO / "data" / "boundaries" / "south_america_countries.geojson"   # Natural Earth 1:110m
 MAX_RING = 3                  # rings 0..3 are written; anything further is MAX_RING + 1
 FAR = MAX_RING + 1
 
@@ -101,16 +100,42 @@ def tile_squares(numbers, size_m: float, grow_m: float = 0.0, steps: int = 4) ->
 
 # ------------------------------------------------------------ reading
 
-def read_cumulative(path: Path = CUMULATIVE) -> pd.DataFrame:
-    """AMW's cumulative record: one row per location AMW ever found mining at, with the year."""
-    if not path.exists():
-        raise SystemExit(f"HISTORY ERROR: {path} is missing. Download amazon_basin_detections.geojson "
-                         f"from https://source.coop/earthgenome/amazon-mining-watch (top folder) into "
-                         f"{path.parent}")
-    gdf = gpd.read_file(path, columns=["onset", "onset_year", "status"])
-    kx, ky = centroid_key(gdf)
-    return pd.DataFrame({"key": key_int(kx, ky), "onset": gdf["onset"].astype(str),
-                         "onset_year": gdf["onset_year"].astype(int), "status": gdf["status"].astype(str)})
+RAW_NAME = re.compile(r"^amazon_basin_(\d{4}|Q[1-4]\d{2})_t0\.4\.geojson$")
+
+
+def period_year(tag: str) -> int:
+    """'2021' -> 2021, 'Q325' -> 2025."""
+    return int(tag) if tag.isdigit() else 2000 + int(tag[2:])
+
+
+def raw_files(folder: Path = compare.AMW_DIR) -> dict[str, Path]:
+    """AMW's raw detection files in the folder, by period: {'2018': ..., 'Q125': ...}.
+
+    Only the basin files at AMW's raw threshold (amazon_basin_<period>_t0.4.geojson):
+    not the Andes files (threshold 0.2), not the postprocessed ones (_t0.43_t-iso0.75),
+    not the cumulative record.
+    """
+    files = {m.group(1): p for p in folder.glob("amazon_basin_*.geojson") if (m := RAW_NAME.match(p.name))}
+    if not files:
+        raise SystemExit(f"HISTORY ERROR: no amazon_basin_<period>_t0.4.geojson in {folder}. Download "
+                         f"them from https://source.coop/earthgenome/amazon-mining-watch (raw_detections/)")
+    return dict(sorted(files.items(), key=lambda kv: (period_year(kv[0]), kv[0])))
+
+
+def read_raw(files: dict[str, Path]) -> pd.DataFrame:
+    """Every location any raw file lists (confidence > 0.4): key, first year, periods it is in."""
+    parts = []
+    for tag, path in files.items():
+        gdf = gpd.read_file(path, columns=["confidence"])
+        kx, ky = centroid_key(gdf)
+        parts.append(pd.DataFrame({"key": key_int(kx, ky), "tag": tag, "year": period_year(tag)}))
+        print(f"  {path.name}: {len(gdf):,} rows", flush=True)
+    rows = pd.concat(parts, ignore_index=True).drop_duplicates(["key", "tag"])
+    return (rows.groupby("key")
+            .agg(first_year=("year", "min"), periods=("tag", "size"),
+                 annual_periods=("tag", lambda t: int(t.str.isdigit().sum())),
+                 first_period=("tag", "first"))
+            .reset_index())
 
 
 def chips_at(run: Path, keys: np.ndarray) -> pd.DataFrame:
@@ -127,7 +152,7 @@ def chips_at(run: Path, keys: np.ndarray) -> pd.DataFrame:
         if hit.any():
             found.append(pd.DataFrame({"chip_id": batch.column("chip_id").to_numpy()[hit], "key": k[hit]}))
         if i % 10 == 0:
-            print(f"  plan: {(i + 1) * 2:,} M chips read", flush=True)
+            print(f"  plan: batch {i + 1:,} read", flush=True)
     return pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=["chip_id", "key"])
 
 
@@ -151,60 +176,67 @@ def rings(tiles: pd.DataFrame, centre: np.ndarray, size_m: float, max_ring: int 
 
 # ------------------------------------------------------------ a run
 
-def history_tiles(run: Path, cumulative: Path = CUMULATIVE) -> Path:
+def countries_of(lon, lat, path: Path = COUNTRIES) -> np.ndarray:
+    """The country each point lies in (the nearest one for points just off the coarse outlines)."""
+    if not path.exists():
+        return np.full(len(lon), "", dtype=object)
+    shapes = gpd.read_file(path)
+    tree = shapely.STRtree(shapes.geometry.values)
+    idx = tree.nearest(shapely.points(lon, lat))
+    return shapes["country"].to_numpy()[idx]
+
+
+def history_tiles(run: Path, folder: Path = compare.AMW_DIR) -> Path:
     t0 = time.time()
     out = run / "amw_comparison"
     out.mkdir(exist_ok=True)
-    cfg = compare.frozen_config(run)["imagery"]
-    size_m = float(cfg["tilesize"]) * 10.0           # grid.RESOLUTION_M: tiles are 10 m pixels
+    size_m = float(compare.frozen_config(run)["imagery"]["tilesize"]) * 10.0   # 10 m pixels
 
-    amw = read_cumulative(cumulative)
-    print(f"AMW cumulative: {len(amw):,} locations, onset {amw['onset_year'].min()}-"
-          f"{amw['onset_year'].max()} ({time.time() - t0:.0f} s)", flush=True)
+    files = raw_files(folder)
+    print(f"AMW raw files: {' '.join(files)}", flush=True)
+    amw = read_raw(files)
+    print(f"{len(amw):,} locations in any of them ({time.time() - t0:.0f} s)", flush=True)
 
-    tiles = pd.read_csv(run / "plan" / "tiles.csv").drop_duplicates("tile_key")
-    tiles = pd.DataFrame({"tile": [compare.key_number(k) for k in tiles["tile_key"]],
-                          "tile_key": tiles["tile_key"].to_numpy()})
-    subs = pd.read_csv(run / "plan" / "tiles.csv")
-    subs["tile"] = [compare.key_number(k) for k in subs["tile_key"]]
-    tiles = tiles.merge(subs.groupby("tile")["subregion"].agg(lambda s: " ".join(map(str, sorted(s)))),
-                        on="tile", how="left").sort_values("tile", ignore_index=True)
+    listed = pd.read_csv(run / "plan" / "tiles.csv")
+    listed["tile"] = [compare.key_number(k) for k in listed["tile_key"]]
+    tiles = (listed.groupby("tile")
+             .agg(tile_key=("tile_key", "first"),
+                  subregion=("subregion", lambda s: " ".join(map(str, sorted(s)))))
+             .reset_index())
 
+    # the extra step: the unique chip IDs of every location AMW ever detected
     chips = chips_at(run, amw["key"].to_numpy())
     chips["tile"] = chips["chip_id"].to_numpy() // 1000
     hits = chips.merge(amw, on="key")          # a location in two overlapping tiles: two rows
     matched = amw["key"].isin(chips["key"])
-    print(f"matched {matched.sum():,} of {len(amw):,} AMW locations to our chips "
+    hits.drop(columns="key").sort_values("chip_id").to_parquet(out / "history_chips.parquet", index=False)
+    print(f"matched {matched.sum():,} of {len(amw):,} AMW locations to {len(hits):,} of our chips "
           f"({time.time() - t0:.0f} s)", flush=True)
 
-    per_tile = hits.groupby("tile").agg(history_chips=("key", "nunique"), first_onset_year=("onset_year", "min"))
+    per_tile = hits.groupby("tile").agg(history_chips=("chip_id", "size"), first_year=("first_year", "min"))
     tiles = tiles.merge(per_tile, on="tile", how="left")
     tiles["history_chips"] = tiles["history_chips"].fillna(0).astype(int)
-    first = tiles["first_onset_year"]
     centre = shapely.centroid(tile_squares(tiles["tile"].to_numpy(), size_m, steps=1))
     tiles["lon"], tiles["lat"] = shapely.get_x(centre), shapely.get_y(centre)
-
-    cutoffs = list(range(int(amw["onset_year"].min()), int(amw["onset_year"].max()) + 1))
-    for year in cutoffs:
-        tiles[f"ring_to{year}"] = rings(tiles, (first <= year).to_numpy(), size_m)
-        n = tiles[f"ring_to{year}"].value_counts().sort_index()
-        print(f"  history to {year}: " + ", ".join(f"ring {r}: {c:,}" for r, c in n.items() if r <= MAX_RING)
-              + f" of {len(tiles):,} tiles", flush=True)
+    tiles["country"] = countries_of(tiles["lon"].to_numpy(), tiles["lat"].to_numpy())
+    tiles["ring"] = rings(tiles, (tiles["history_chips"] > 0).to_numpy(), size_m)
+    n = tiles["ring"].value_counts().sort_index()
+    print("  " + ", ".join(f"ring {r}: {c:,}" for r, c in n.items() if r <= MAX_RING)
+          + f" of {len(tiles):,} tiles", flush=True)
     tiles.to_parquet(out / "history_tiles.parquet", index=False)
 
-    last = f"ring_to{cutoffs[-1]}"
-    near = tiles[tiles[last] <= MAX_RING]
+    near = tiles[tiles["ring"] <= MAX_RING]
     gpd.GeoDataFrame(near.drop(columns=["lon", "lat"]),
                      geometry=tile_squares(near["tile"].to_numpy(), size_m), crs="EPSG:4326"
                      ).to_file(out / "history_tiles.geojson", driver="GeoJSON")
 
     summary = {
-        "cumulative_file": cumulative.name, "cumulative_sha256": compare.sha256(cumulative)[:12],
+        "source": "AMW raw detections, confidence > 0.4", "files": {t: p.name for t, p in files.items()},
+        "fingerprints": {t: compare.sha256(p)[:12] for t, p in files.items()},
         "amw_locations": int(len(amw)), "matched_to_our_chips": int(matched.sum()),
-        "unmatched": int((~matched).sum()),
-        "unmatched_by_onset_year": {int(k): int(v) for k, v in amw.loc[~matched, "onset_year"].value_counts().sort_index().items()},
-        "locations_by_onset_year": {int(k): int(v) for k, v in amw["onset_year"].value_counts().sort_index().items()},
-        "tiles_in_run": int(len(tiles)), "tile_size_m": size_m, "max_ring": MAX_RING, "cutoffs": cutoffs,
+        "unmatched": int((~matched).sum()), "history_chips": int(len(hits)),
+        "locations_by_first_year": {int(k): int(v) for k, v in amw["first_year"].value_counts().sort_index().items()},
+        "tiles_in_run": int(len(tiles)), "tile_size_m": size_m, "max_ring": MAX_RING,
     }
     (out / "history_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"results -> {out} ({(time.time() - t0) / 60:.1f} min)", flush=True)
@@ -212,9 +244,9 @@ def history_tiles(run: Path, cumulative: Path = CUMULATIVE) -> Path:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Our tiles in which AMW ever found mining, and their neighbours.")
+    ap = argparse.ArgumentParser(description="Our tiles in which AMW ever detected mining, and their neighbours.")
     ap.add_argument("--run", required=True, type=Path)
-    ap.add_argument("--cumulative", type=Path, default=CUMULATIVE, help=f"default: {CUMULATIVE}")
+    ap.add_argument("--amw-dir", type=Path, default=compare.AMW_DIR, help=f"default: {compare.AMW_DIR}")
     args = ap.parse_args()
     run = args.run if args.run.is_absolute() else REPO / args.run
-    history_tiles(run, args.cumulative)
+    history_tiles(run, args.amw_dir)
