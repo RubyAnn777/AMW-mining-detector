@@ -28,6 +28,7 @@ Contents
   - [B6. Getting the results](#b6-getting-the-results-on-goethe-or-copied-to-a-laptop)
   - [B7. If something breaks](#b7-if-something-breaks)
   - [B8. A finished year: assemble, check, compare, notebooks](#b8-a-finished-year-assemble-check-compare-notebooks)
+  - [B10. Two-stage scoring: AMW's tiles first](#b10-two-stage-scoring-amws-tiles-first)
 
 ---
 
@@ -40,6 +41,7 @@ panel_pipeline/
   plan.py                 step 1, once per run
   detect.py               step 2, the scoring, one task at a time
   status.py               any time: how far a run has got, and the commands still to run
+  priority.py             optional, once per run: the priority list for two-stage scoring (B10)
   assemble_period.py      step 3, one period across subregions, plus AMW's postprocess flags
   lib/                    imported by the steps, never run on their own
     config.py periods.py grid.py lock.py provenance.py read_panel.py
@@ -703,4 +705,49 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
 - **Big charts.** A chart with one point per chip draws at most 10,000 of them
   (`notebook_kit.thin`, said in the chart's title): marimo refuses outputs over 8 MB, and
   the AMW score chart of a full quarter was 260 MB.
+
+### B10. Two-stage scoring: AMW's tiles first
+
+When Earth Engine is the limit, a run can be scored in two passes instead of one:
+
+- **priority 1**: every tile in which AMW has ever detected mining (any chip of any of
+  AMW's raw detection files), plus rings of neighbouring tiles;
+- **priority 2**: all other tiles, later.
+
+Both passes write into the same task folders as the normal job. A task's `_status.json`
+says `complete` only when every tile is saved, so a period is assembled only after both
+passes, and then holds exactly what a single pass would. The normal job
+(`detect_tasks.sbatch`, `status.py` without `--priority`) is unchanged and can be used at
+any time; it scores whatever is missing, of either priority. Checked on 2025-2026 with
+`notebooks/amw_history.py`: AMW's tiles + 3 rings held about 98% of our detections.
+
+```bash
+# once: AMW's raw files onto the run's tiles (amw_comparison/README.md step 5)
+sbatch cluster/amw_history.sbatch $RUN
+# once: the list. --dry-run first to see the counts per ring; then for real
+python panel_pipeline/priority.py --run $RUN --rings 3 --dry-run
+python panel_pipeline/priority.py --run $RUN --rings 3
+python panel_pipeline/priority.py --run $RUN --show
+# priority 1 of a year (or a period, or all), then later priority 2
+sbatch cluster/detect_priority.sbatch $RUN 1 2024
+sbatch cluster/detect_priority.sbatch $RUN 2 2024
+# how far each pass is
+python panel_pipeline/status.py --run $RUN                 # one progress line per priority
+python panel_pipeline/status.py --run $RUN --priority 1    # grid and bars for priority 1 only
+python panel_pipeline/status.py --run $RUN --priority 1 --todo
+```
+
+- `priority.py` writes `<run>/priority/tiles.csv` (every tile: key, number, ring,
+  priority) and `record.json` (rings, AMW files and fingerprints, code version, counts, and
+  the fingerprint of tiles.csv). The list is made once: it refuses a different list once
+  any task has used it, and detect.py and status.py refuse a tiles.csv that no longer
+  matches its fingerprint.
+- `detect.py --priority 1` scores only the task's priority-1 tiles; `--priority 2` the
+  rest, skipping what is saved. Every `_status.json` of a run with a list gets per-priority
+  counts (`"priority": {"list", "rings", "1": {planned, saved, failed}, "2": ...}`), and each
+  session records the priority it ran with.
+- `status.py --priority N`: a task is "done" once its priority-N tiles are saved. Tasks
+  scored before the list existed are counted from their part files.
+- `detect_priority.sbatch` is `detect_tasks.sbatch` with `PRIORITY` set: same task lists,
+  rounds, stop handling and arguments (`[tasks at once] [workers]`).
 
