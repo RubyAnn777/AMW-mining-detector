@@ -12,6 +12,8 @@ amw_comparison/
 ├── compare.py      joins a run with AMW's files and writes <run>/amw_comparison/ (the results)
 ├── (notebook)      notebooks/amw_comparison.py shows the results: counts, scores, last day, border, months
 ├── last_day.py     are the differences under the scenes of the quarter's last day? (Earth Engine)
+├── history.py      which tiles AMW ever found mining in, and the rings of tiles around them;
+│                   notebooks/amw_history.py: how many of our 2025/2026 detections lie there
 ├── tests/          python -m unittest discover -s amw_comparison/tests
 └── data/amw/       AMW's files as you downloaded them (ignored by git)
 ```
@@ -81,6 +83,16 @@ What `<run>/amw_comparison/` holds:
 | `amw_files.csv` | AMW's files compared, rows and fingerprint (AMW replaces files when it re-runs) |
 | `joins.csv` | per quarter and subregion: AMW rows on our chips, rows that should have matched (must be 0), our chips sharing a location |
 | `chips_<quarter>.parquet` | every chip that our quarter, AMW or one of our months detected: `confidence`, `amw_confidence`, `conf_<month>`, `months_detected`, image quality, `subregion`, `border_copies`, `border_spread` |
+
+**5. Only AMW's mining tiles?** Would scoring only the tiles where AMW has found mining
+before (plus a ring of neighbours) still catch our detections? Needs AMW's cumulative record,
+`amazon_basin_detections.geojson` (top folder on Source Cooperative), in `data/amw/`, and step 2
+done for 2025 and 2026:
+
+```bash
+sbatch cluster/amw_history.sbatch $RUN          # history.py, then the page $RUN/reports/amw_history.html
+marimo run notebooks/amw_history.py -- --run <run>
+```
 
 ## Results
 
