@@ -4,6 +4,9 @@ Run after plan.py, once per frequency and subregion:
     python panel_pipeline/detect.py --run tests_output/pilot --frequency monthly --subregion 6
     ... --from 2018-01 --to 2018-12   only these periods (default: all of the run's)
     ... --limit 1                     only the first tile: one Earth Engine request
+    ... --priority 1                  two-stage scoring: only the run's priority-1 tiles
+                                      (AMW's tiles + rings, panel_pipeline/priority.py);
+                                      --priority 2 later scores the rest, skipping those
     ... --workers 16 --batch-tiles 100 --tries 2   run-time choices (default: the run's config)
     ... --flush-minutes 2             save a part at least this often (default 2)
     ... --mac-eager                   on macOS, AMW's slower TensorFlow setting (if crashes)
@@ -70,6 +73,7 @@ from config import Config, load_config
 from grid import CHIP_PX, chip_ids
 from lock import FolderLock, Locked
 from periods import Period
+import priority as prio
 from provenance import environment, repo_path, sha256
 
 # AMW code. These must come after `grid`, which puts AMW's core/ on the search path.
@@ -425,7 +429,8 @@ def merge_parts(folder: Path) -> None:
 
 
 def write_status(folder: Path, about: dict, planned: list, errors: dict,
-                 sessions: list, counted: tuple[set[int], int] | None = None) -> dict:
+                 sessions: list, counted: tuple[set[int], int] | None = None,
+                 plist: prio.PriorityList | None = None) -> dict:
     """Count what the part files hold, and write it to _status.json, all or nothing.
 
     `counted` (saved tiles, chips) skips the recount, for the updates after each batch.
@@ -448,6 +453,13 @@ def write_status(folder: Path, about: dict, planned: list, errors: dict,
         "tiles_recovered": recovered,
         "sessions": sessions,
     }
+    if plist is not None:
+        # ADDITION (two-stage scoring, Nov 2026): how far each priority of this task got,
+        # and which frozen list said which tile is which (lib/priority.py). Written for
+        # every task of a run that has a list, also when scored without --priority, so
+        # status.py can show both passes from _status.json alone.
+        status["priority"] = {"list": plist.tag, "rings": plist.rings} | plist.counts(
+            [tile_number(t) for t in planned], saved, {prio.number_of_key(k) for k in failed})
     tmp = folder / "_status.tmp"
     tmp.write_text(json.dumps(status, indent=2) + "\n")
     os.replace(tmp, folder / "_status.json")
@@ -463,7 +475,8 @@ def utc_now() -> str:
 def run_period(cfg: Config, period: Period, subregion: int, planned: list,
                limit: int | None, model, members: list[str], folder: Path,
                lock: FolderLock, image_cache: Path | None, flush_minutes: float,
-               tf_eager: bool) -> dict:
+               tf_eager: bool, plist: prio.PriorityList | None = None,
+               which: int | None = None) -> dict:
     """Score a period's tiles, saving a part every few minutes, with AMW's retries.
 
     The caller holds the folder's lock; it is checked before every write.
@@ -486,8 +499,10 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
          "flush_minutes": flush_minutes,               # --batch-tiles, --flush-minutes
          "tf_eager": tf_eager,                         # --mac-eager
          "tries": cfg.inference.tries,                 # and --tries can change
-         "image_cache": str(image_cache) if image_cache else None}   # kept images score
+         "image_cache": str(image_cache) if image_cache else None,   # kept images score
                                                        # slightly differently, so say so
+         "priority": which,                            # ADDITION: --priority 1 / 2 / None
+         "priority_list": plist.tag if plist else None}
         | environment(cfg)]
     about = {
         "period": period.tag,
@@ -499,9 +514,12 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
         "model": repo_path(cfg.inference.model_path),
         "model_members": members,                # vote_1, vote_2, ... in this order
     }
-    write_status(folder, about, planned, errors, sessions)   # so even a crash leaves a record
+    write_status(folder, about, planned, errors, sessions, plist=plist)   # so even a crash leaves a record
 
-    work = planned[:limit]                       # --limit: the first tiles only
+    # ADDITION (two-stage scoring): --priority 1 / 2 gives this session only that
+    # priority's tiles. `planned` stays every tile of the subregion, so "complete" still
+    # means every tile, and the second pass skips what the first one saved.
+    work = (plist.select(planned, which, tile_number) if which else planned)[:limit]
     extractor = extractor_for(cfg, period, image_cache)
     stride = CHIP_PX // cfg.inference.stride_ratio           # AMW: inference_engine.py:756
     workers, size = cfg.imagery.max_workers, cfg.inference.batch_tiles
@@ -510,6 +528,9 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
     # ADDITION: say on screen what a resume skips, so a rerun visibly scores nothing twice.
     parts = len(list(folder.glob("part_*.parquet")))
     to_score = sum(tile_number(t) not in saved for t in work)
+    if which:
+        log.write(f"  {period.tag}  priority {which}: {len(work):,} of the subregion's "
+                  f"{len(planned):,} tiles (list {plist.tag})")
     log.write(f"  {period.tag}  " + (f"resuming: {len(saved):,}/{len(planned):,} tiles "
               f"already saved in {parts} part file(s), not scored again; " if saved
               else "starting: ") + f"{to_score:,} tiles to score, {workers} workers, "
@@ -534,7 +555,7 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
             if STOP.wait(pause):                 # a stop request ends the pause at once
                 lock.check()
                 sessions[-1]["stopped_utc"] = utc_now()
-                write_status(folder, about, planned, errors, sessions,
+                write_status(folder, about, planned, errors, sessions, plist=plist,
                              counted=(saved, n_chips))
                 log.write(f"  {period.tag}  stopped; every scored tile is saved",
                           screen=False)
@@ -553,7 +574,8 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
                 n_chips += sum(len(d["rows"]) for d in scored)
                 saved.update(tile_number(d["tile"]) for d in scored)
             errors |= failed
-            write_status(folder, about, planned, errors, sessions, counted=(saved, n_chips))
+            write_status(folder, about, planned, errors, sessions, plist=plist,
+                         counted=(saved, n_chips))
             now = time.monotonic()
             left = len(todo) - (len(saved) - before)
             rate = len(window) / (now - last)
@@ -603,13 +625,14 @@ def run_period(cfg: Config, period: Period, subregion: int, planned: list,
             save()
         if STOP.is_set():
             sessions[-1]["stopped_utc"] = utc_now()
-            write_status(folder, about, planned, errors, sessions, counted=(saved, n_chips))
+            write_status(folder, about, planned, errors, sessions, plist=plist,
+                         counted=(saved, n_chips))
             log.write(f"  {period.tag}  stopped; every scored tile is saved", screen=False)
             raise Stopped(STOP_MESSAGE)
 
     sessions[-1]["finished_utc"] = utc_now()
     lock.check()
-    status = write_status(folder, about, planned, errors, sessions)
+    status = write_status(folder, about, planned, errors, sessions, plist=plist)
     if status["complete"]:
         merge_parts(folder)
     log.write(f"  {period.tag}  session finished: {status['tiles_saved']:,}/"
@@ -758,6 +781,10 @@ if __name__ == "__main__":
     ap.add_argument("--from", dest="first", help="first period, e.g. 2018-01 or 2018Q1")
     ap.add_argument("--to", dest="last", help="last period")
     ap.add_argument("--limit", type=int, help="score only the first LIMIT tiles (a test)")
+    ap.add_argument("--priority", type=int, choices=prio.PRIORITIES,
+                    help="two-stage scoring: only the tiles of this priority in the run's "
+                         "priority list (panel_pipeline/priority.py); 2 skips what 1 saved. "
+                         "Without it: every tile, as always")
     ap.add_argument("--workers", type=int,
                     help="parallel downloads (default: the run's imagery.max_workers)")
     ap.add_argument("--batch-tiles", type=int,
@@ -797,6 +824,18 @@ if __name__ == "__main__":
     check_model(cfg, run_dir)
     periods = pick_periods(cfg, args.frequency, args.first, args.last)
     planned = subregion_tiles(run_dir, args.subregion)
+    try:
+        plist = prio.load(run_dir)               # ADDITION: the run's frozen priority list
+    except prio.PriorityError as err:
+        raise SystemExit(f"DETECT ERROR: {err}")
+    if args.priority and plist is None:
+        raise SystemExit(f"DETECT ERROR: --priority needs the run's priority list; make it with "
+                         f"python panel_pipeline/priority.py --run {args.run} --rings 3")
+    if plist is not None:
+        try:                                     # every planned tile must have a priority
+            plist.select(planned, 1, tile_number)
+        except prio.PriorityError as err:
+            raise SystemExit(f"DETECT ERROR: {err}")
     if not planned:
         raise SystemExit(f"DETECT ERROR: subregion {args.subregion} has no tiles in this "
                          f"run (a test run's clip_to can leave a subregion empty)")
@@ -836,7 +875,9 @@ if __name__ == "__main__":
           f"{args.frequency} periods, {periods[0].tag} to {periods[-1].tag}, "
           f"{cfg.imagery.max_workers} download workers, a part every "
           f"{cfg.inference.batch_tiles} tiles or {args.flush_minutes:g} min" + (f", first {args.limit} tile(s) only" if args.limit else "")
-          + (f", images kept in {image_cache}" if image_cache else ""), flush=True)
+          + (f", images kept in {image_cache}" if image_cache else "")
+          + (f", priority {args.priority} only: {len(plist.select(planned, args.priority, tile_number)):,} "
+             f"tiles (list {plist.tag})" if args.priority else ""), flush=True)
     failed_periods, locked = 0, []
     try:
         for period in periods:
@@ -848,14 +889,16 @@ if __name__ == "__main__":
                 with FolderLock(folder) as lock:     # given back when the block ends, however
                     status = run_period(cfg, period, args.subregion, planned, args.limit,
                                         model, members, folder, lock, image_cache,
-                                        args.flush_minutes, tf_eager)
+                                        args.flush_minutes, tf_eager, plist, args.priority)
             except Locked as busy:                   # another process is writing this period
                 print(f"{period.tag}  SKIPPED: {busy}", flush=True)
                 locked.append(period.tag)
                 continue
+            mine = status.get("priority", {}).get(str(args.priority)) if args.priority else None
             print(f"{period.tag}  {status['tiles_saved']:,}/{status['tiles_planned']:,} "
-                  f"tiles saved, {len(status['tiles_failed'])} failed  ->  {folder}",
-                  flush=True)
+                  f"tiles saved, {len(status['tiles_failed'])} failed"
+                  + (f" (priority {args.priority}: {mine['saved']:,}/{mine['planned']:,} saved)"
+                     if mine else "") + f"  ->  {folder}", flush=True)
             failed_periods += bool(status["tiles_failed"])
     except Stopped as stopped:
         # The lock is given back and every saved part is complete. Downloads may still be

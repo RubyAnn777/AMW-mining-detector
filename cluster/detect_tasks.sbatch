@@ -54,6 +54,7 @@ fi
 TASKS="$1"
 AT_ONCE="${2:-4}"
 WORKERS="${3:-5}"
+PRIORITY="${PRIORITY:-}"                      # two-stage scoring: 1 or 2 (cluster/detect_priority.sbatch sets it)
 ROUNDS="${ROUNDS:-4}"                         # the list once, then up to 3 rounds of leftovers
 ROUND_WAIT_S="${ROUND_WAIT_S:-960}"                             # 16 min: longer than a lock takes to go stale
 STOPPING=0
@@ -79,13 +80,14 @@ if [ -n "${FROM_RUN}" ]; then
     FILTER="--from ${WHICH} "                   # a period: status.py prints "--from <tag> --to <tag>"
     [[ "${WHICH}" =~ ^[0-9]{4}$ ]] && FILTER="--from ${WHICH}"   # a year: its months and quarters
     [ "${WHICH}" = all ] && FILTER="--from "
-    python panel_pipeline/status.py --run "${FROM_RUN}" --todo | grep -F -- "${FILTER}" > "${TASKS}" || true
+    python panel_pipeline/status.py --run "${FROM_RUN}" --todo ${PRIORITY:+--priority "${PRIORITY}"} | grep -F -- "${FILTER}" > "${TASKS}" || true
     if [ "$(grep -c . "${TASKS}")" = 0 ]; then
-        echo "$(date -u +%FT%TZ) nothing to do in ${FROM_RUN} for ${WHICH}: every task is done or running"
+        echo "$(date -u +%FT%TZ) nothing to do in ${FROM_RUN} for ${WHICH}${PRIORITY:+ (priority ${PRIORITY})}: every task is done or running"
         exit 0
     fi
 fi
 
+[ -n "${PRIORITY}" ] && echo "$(date -u +%FT%TZ) priority ${PRIORITY} only: $(python panel_pipeline/priority.py --run "${FROM_RUN:-$(grep -m1 -oE -- '--run [^ ]+' "${TASKS}" | cut -d' ' -f2)}" --show | head -1)"
 echo "$(date -u +%FT%TZ) job ${SLURM_JOB_ID} on $(hostname): ${AT_ONCE} tasks at once, ${WORKERS} workers each, ${TF_THREADS} threads each"
 echo "task list: ${TASKS} ($(grep -c . "${TASKS}") lines)"
 
@@ -108,7 +110,7 @@ run_list() {
 leftovers() {
     # What is still missing ($1: where to write it): status.py's --todo, only the lines
     # that are also in this job's own task list. Prints how many there are.
-    python panel_pipeline/status.py --run "${RUN_DIR}" --todo \
+    python panel_pipeline/status.py --run "${RUN_DIR}" --todo ${PRIORITY:+--priority "${PRIORITY}"} \
         | grep -Fx -f "${TASKS}" > "$1" || true
     grep -c . "$1" || true
 }

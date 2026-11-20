@@ -4,6 +4,13 @@
     python panel_pipeline/status.py --run ... --frequency quarterly
     python panel_pipeline/status.py --run ... --todo > tasks.txt   the commands still to run
     python panel_pipeline/status.py --run ... --all                 a progress bar for every task
+    python panel_pipeline/status.py --run ... --priority 1          the same, for priority 1's tiles only
+    python panel_pipeline/status.py --run ... --priority 1 --todo   the commands still to run for it
+
+Two-stage scoring (Nov 2026): when the run has a priority list (panel_pipeline/priority.py),
+every frequency also gets one progress line per priority, and --priority 1 or 2 shows the
+grid, the progress bars and the --todo commands for that priority's tiles only (a task is
+"done" there once all its priority-1 tiles are saved, even if its priority-2 tiles are not).
 
 Below the grid it shows a progress bar per task (counted in tiles, from _status.json,
 which detect.py updates after every batch) for each task that has started but is not
@@ -27,6 +34,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))   # our helpers: config, periods, grid, ...
 
 import lock
+import priority as prio
 from config import Config, load_config
 from periods import Period
 
@@ -50,6 +58,59 @@ def tiles_per_subregion(run_dir: Path) -> Counter:
     """
     with open(run_dir / "plan" / "tiles.csv", newline="") as f:
         return Counter(int(row["subregion"]) for row in csv.DictReader(f))
+
+
+def tile_numbers(run_dir: Path) -> dict[int, list[int]]:
+    """Each subregion's tile numbers (chip_id // 1000), from plan/tiles.csv."""
+    out: dict[int, list[int]] = {}
+    with open(run_dir / "plan" / "tiles.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            out.setdefault(int(row["subregion"]), []).append(prio.number_of_key(row["tile_key"]))
+    return out
+
+
+def saved_numbers(folder: Path) -> set[int]:
+    """The tiles saved in a task's part files (only for _status.json files without priority counts)."""
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    out: set[int] = set()
+    for part in sorted(folder.glob("part_*.parquet")):
+        ids = pq.read_table(part, columns=["chip_id"]).column("chip_id")
+        out.update(pc.unique(pc.divide(ids, 1000)).to_pylist())
+    return out
+
+
+def priority_counts(folder: Path, plist: prio.PriorityList, numbers: list[int]) -> dict:
+    """{'1': {planned, saved, failed}, '2': {...}} for one task.
+
+    From _status.json when detect.py wrote the counts there with this list; otherwise (a
+    task scored before the list existed, or by older code) worked out from the part files.
+    """
+    try:
+        status = json.loads((folder / "_status.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return plist.counts(numbers, set())
+    counts = status.get("priority")
+    if counts and counts.get("list") == plist.tag:
+        return {p: counts[p] for p in ("1", "2")}
+    if status.get("complete"):
+        return plist.counts(numbers, set(numbers))
+    failed = {prio.number_of_key(k) for k in status.get("tiles_failed", {})}
+    return plist.counts(numbers, saved_numbers(folder), failed)
+
+
+def priority_state(row: dict, which: int) -> tuple[str, str]:
+    """A task's state for one priority's tiles (running and stopped are the task's own)."""
+    if row["state"] in ("running", "stopped"):
+        return row["state"], row["note"]
+    c = row["prio"][str(which)]
+    if c["saved"] >= c["planned"]:
+        return "done", ""
+    if c["failed"]:
+        return "failed", f"{c['failed']} priority-{which} tile(s) failed; " + row["note"]
+    if c["saved"] == 0:
+        return "not started", ""
+    return "partly done", f"{c['saved']:,}/{c['planned']:,} priority-{which} tiles saved"
 
 
 def tiles_saved(folder: Path, planned: int) -> tuple[int, int]:
@@ -105,7 +166,8 @@ def task_state(folder: Path) -> tuple[str, str]:
 
 
 def tasks(cfg: Config, run_dir: Path, frequencies: list[str],
-          planned: Counter) -> list[dict]:
+          planned: Counter, plist: prio.PriorityList | None = None,
+          numbers: dict[int, list[int]] | None = None) -> list[dict]:
     """Every task of the run, period first: 2018-01 subregions 1..6, then 2018-02, ..."""
     out = []
     for freq in frequencies:
@@ -117,7 +179,9 @@ def tasks(cfg: Config, run_dir: Path, frequencies: list[str],
                 saved, of = tiles_saved(folder, planned[n])
                 out.append({"frequency": freq, "period": period, "subregion": n,
                             "state": state, "note": note, "saved": saved, "planned": of,
-                            "job": job_of(folder) if state == "running" else None})
+                            "job": job_of(folder) if state == "running" else None,
+                            "prio": (priority_counts(folder, plist, numbers[n])
+                                     if plist is not None else None)})
     return out
 
 
@@ -136,10 +200,21 @@ def grid(rows: list[dict], freq: str, subregions: list[int]) -> list[str]:
     return lines
 
 
-def command(run: str, row: dict) -> str:
+def command(run: str, row: dict, which: int | None = None) -> str:
     tag = row["period"].tag
     return (f"python panel_pipeline/detect.py --run {run} --frequency {row['frequency']} "
-            f"--subregion {row['subregion']} --from {tag} --to {tag}")
+            f"--subregion {row['subregion']} --from {tag} --to {tag}"
+            + (f" --priority {which}" if which else ""))
+
+
+def for_priority(rows: list[dict], which: int) -> list[dict]:
+    """The rows as seen by one priority: state, note and tile counts of its tiles only."""
+    out = []
+    for r in rows:
+        state, note = priority_state(r, which)
+        c = r["prio"][str(which)]
+        out.append(r | {"state": state, "note": note, "saved": c["saved"], "planned": c["planned"]})
+    return out
 
 
 if __name__ == "__main__":
@@ -152,6 +227,8 @@ if __name__ == "__main__":
                          "running, period first, one per line")
     ap.add_argument("--all", action="store_true",
                     help="a progress bar for every task, also those done or not started")
+    ap.add_argument("--priority", type=int, choices=prio.PRIORITIES,
+                    help="two-stage scoring: show (and --todo) only this priority's tiles")
     args = ap.parse_args()
 
     run_dir = Path(args.run).expanduser().resolve()      # as detect.py reads --run
@@ -166,15 +243,27 @@ if __name__ == "__main__":
     chosen = [args.frequency] if args.frequency else list(cfg.periods)
     planned = tiles_per_subregion(run_dir)
     subregions = sorted(planned)
-    rows = tasks(cfg, run_dir, chosen, planned)
+    try:
+        plist = prio.load(run_dir)
+    except prio.PriorityError as err:
+        raise SystemExit(f"STATUS ERROR: {err}")
+    if args.priority and plist is None:
+        raise SystemExit("STATUS ERROR: this run has no priority list (panel_pipeline/priority.py)")
+    every = tasks(cfg, run_dir, chosen, planned, plist, tile_numbers(run_dir) if plist else None)
+    rows = for_priority(every, args.priority) if args.priority else every
 
     if args.todo:                    # only commands, so the output can go into a file
         for row in rows:
             if row["state"] not in ("done", "running"):
-                print(command(args.run, row))
+                print(command(args.run, row, args.priority))
         raise SystemExit(0)
 
     print(f"run         {run_dir}")
+    if plist is not None:
+        print(f"priority    {prio.describe(plist)}")
+    if args.priority:
+        print(f"showing     priority {args.priority} only: a task is done once its "
+              f"priority-{args.priority} tiles are saved")
     print(f"subregions  {', '.join(map(str, subregions))} (those with tiles; one mark each, "
           f"in this order)")
     for freq in chosen:
@@ -183,7 +272,15 @@ if __name__ == "__main__":
         summary = ", ".join(f"{counts[s]} {s}" for s in MARKS if counts[s])
         saved, of = sum(r["saved"] for r in mine), sum(r["planned"] for r in mine)
         print(f"\n{freq}: {len(mine)} tasks: {summary}")
-        print(f"{bar(saved, of)}  {saved:,}/{of:,} tiles saved")
+        print(f"{bar(saved, of)}  {saved:,}/{of:,} tiles saved"
+              + (f" (priority {args.priority})" if args.priority else ""))
+        if plist is not None and not args.priority:
+            for p in prio.PRIORITIES:
+                view = for_priority([r for r in every if r["frequency"] == freq], p)
+                done = sum(r["state"] == "done" for r in view)
+                s_, o_ = sum(r["saved"] for r in view), sum(r["planned"] for r in view)
+                print(f"{bar(s_, o_)}  {s_:,}/{o_:,} priority-{p} tiles saved; "
+                      f"{done} of {len(view)} tasks have all their priority-{p} tiles")
         print("\n".join(grid(mine, freq, subregions)))
     print(f"\n{LEGEND}")
 
