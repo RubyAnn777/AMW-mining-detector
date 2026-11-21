@@ -22,7 +22,7 @@ import notebook_kit  # noqa: E402
 from notebook_kit import cached, find_runs, is_cached, stored, thin  # noqa: E402
 from fake_run import make_run  # noqa: E402
 
-NOTEBOOKS = ["panel_overview", "explore_runs", "amw_comparison", "run_performance"]
+NOTEBOOKS = ["panel_overview", "amw_comparison"]   # notebooks 1 to 4: test_analysis.py
 
 
 class CachedTest(unittest.TestCase):
@@ -97,7 +97,7 @@ class NotebooksTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertNotIn("failed to execute", result.stdout + result.stderr)
         stored = {p.stem for p in (self.run_dir / "summaries").glob("*.pkl")}
-        self.assertTrue({"checks_panel", "seen_panel", "grid", "tasks"} <= stored, stored)
+        self.assertTrue({"checks_panel"} <= stored, stored)
 
     def test_a_full_size_comparison_fits_in_the_browser(self):
         # 9 Nov 2026: the AMW score chart sent every chip of a real quarter, 260 MB, and

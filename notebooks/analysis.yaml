@@ -1,0 +1,14 @@
+# Settings of the analysis notebooks (notebooks/build_tables.py reads this file).
+# After changing it, run build_tables.py again: it notices the change and rebuilds what depends on it.
+
+# Known mines: the chips we measure "distance to the nearest known mine" from, and the
+# history a chip's persistence is judged against. A chip is a known mine if it was detected
+# (AMW's loose rule: 0.43, and 0.75 when isolated) in one of these years.
+#
+# The move from AMW's history to our own scoring: when all four quarters of a year are
+# scored and assembled in our panel, move that year from amw_years to our_years. A chip then
+# counts for that year if any of our quarters of the year detected it. Each year comes from
+# exactly one source; the notebooks print which.
+known_mines:
+  amw_years: [2018, 2019, 2020, 2021, 2022, 2023, 2024]   # from AMW's yearly raw files
+  our_years: []                                          # from our quarterly panel

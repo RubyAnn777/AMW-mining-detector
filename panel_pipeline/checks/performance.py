@@ -11,7 +11,7 @@ the copy of the run has it. (By hand, on the cluster:
 
 Prints one line per task (tiles, wall time, tiles/min, download median, what was busy),
 one per job (node, hours, core-hours, tiles scored in it) and the run's totals. The
-notebook `notebooks/run_performance.py` shows the same numbers over time and what the
+notebook `notebooks/archive/run_performance.py` shows the same numbers over time and what the
 full plan would cost at the measured pace. Reads only; works on a laptop copy of the run
 too (`rsync` the `detect/` folders, README B6: the log and status files are small).
 

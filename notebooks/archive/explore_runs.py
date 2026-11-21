@@ -20,7 +20,7 @@ def _():
     import pyarrow.dataset as ds
     import pyarrow.parquet as pq
 
-    REPO = Path(__file__).resolve().parents[1]
+    REPO = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(REPO / "panel_pipeline"))          # status.py
     sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
     import status

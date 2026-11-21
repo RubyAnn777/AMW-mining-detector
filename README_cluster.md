@@ -305,8 +305,8 @@ In VS Code: **Ports** tab → **Forward a Port** → the `node:port` from the fi
 Code, the `ssh -N -L ...` line from the file in a terminal on your laptop. Then open the
 `http://localhost:...` address in your normal browser (not VS Code's preview).
 `scancel --name=amw-view` stops it.
-Coauthors see `panel_overview` and `amw_comparison`; you, as the repository's owner, also see
-`explore_runs` and `run_performance`.
+Coauthors see notebooks 1 to 4, `panel_overview`, `amw_comparison` and `amw_history`; you, as the
+repository's owner, also see the archived ones in `notebooks/archive/`.
 
 To **edit** a notebook yourself (not view): in a job, `marimo edit notebooks/panel_overview.py
 --host 0.0.0.0 --port <port> -- --run $RUN`, same tunnel. Changes are saved to the file;

@@ -22,14 +22,14 @@ def _():
     sys.path.insert(0, str(REPO / "panel_pipeline" / "checks"))
     import panel_views as pv
     from check_panel import check_panel
-    from notebook_kit import MONTHLY, NOT_STORED, QUARTERLY, cached, stored, thin
+    from notebook_kit import MONTHLY, NOT_STORED, QUARTERLY, cached, glossary, stored, thin
     from periods import Period
     from variables import dictionary, expand
 
     _ = alt.data_transformers.disable_max_rows()
     FREQ_COLOURS = alt.Scale(domain=["monthly", "quarterly"], range=[MONTHLY, QUARTERLY])
     return (FREQ_COLOURS, NOT_STORED, Path, Period, REPO, alt, cached, check_panel, dictionary, expand,
-            gpd, mo, np, os, pd, pq, pv, stored, thin)
+            glossary, gpd, mo, np, os, pd, pq, pv, stored, thin)
 
 
 @app.cell(hide_code=True)
@@ -77,8 +77,8 @@ def _(mo, periods):
                                    "stringent": "det_stringent", "Andes": "det_andes"},
                           value="stringent", label="Detection rule")
     mo.vstack([mo.hstack([quarter, rule], justify="start", gap=2),
-               mo.md("<small>The quarter applies to every section about one quarter (2, 8, 9, 10), the rule to "
-                     "the counts and the map (4, 8).</small>")])
+               mo.md("<small>The quarter applies to every section about one quarter (2, 6, 7, 8), the rule to "
+                     "the counts and the map (4, 6).</small>")])
     return quarter, rule
 
 
@@ -179,20 +179,19 @@ def _(mo):
 
     Written from the code that produces each variable (`plan.py`, `detect.py`,
     `assemble_period.py`); the source is `panel_pipeline/lib/variables.py`. "Missing when"
-    matters for estimation: a missing value is never a zero. Use the search box to find a
-    variable.
+    matters for estimation: a missing value is never a zero. Open the list to read them.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def _(PANEL, dictionary, expand, mo, pv, quarter):
+def _(PANEL, dictionary, expand, glossary, mo, pv, quarter):
     _present = set(pv.PLAN_COLUMNS) | {"period", "lon", "lat", "amw_key_x", "amw_key_y"}
     for _layer in pv.LAYERS:
         _present |= set(pv.record(PANEL, "quarterly", _layer, quarter.value)["columns"])
     variables = dictionary()
     variables = variables[[any(n in _present for n in expand(v)) for v in variables["variable"]]]
-    mo.ui.table(variables, selection=None, page_size=8, wrapped_columns=list(variables.columns[1:]))
+    glossary(list(variables["variable"]))
     return
 
 
@@ -319,157 +318,24 @@ def _(FREQ_COLOURS, alt, counts, mo, pd, rule):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 5. How well each period was seen
+    ## 5. Clouds, persistence, distance and frequencies
 
-    A chip's image is the median of the period's clear scenes (Cloud Score+ ≥ 0.6, AMW's cloud
-    test). Where a pixel has no clear scene at all, the image is black there and the model sees
-    nothing. `n_clear` is the average number of clear scenes per pixel of the chip.
-
-    - *no clear image*: `n_clear = 0`, the whole chip was black to the model;
-    - *under 1*: on average less than one clear scene per pixel;
-    - *quality lost*: periods scored before 1 November 2026 lost `empty_share`, `ndvi_mean`,
-      `bsi_mean`, `cirrus_mean` and `cs_clear_mean` for chips with some black pixels (a bug in
-      `detect.py`, since fixed). The scores are not affected; those values are empty in the
-      panel, never wrong.
+    How well each period was seen, whether detections depend on it, and how months compare
+    with their quarter are analysed in the four analysis notebooks, with every chip and every
+    period: `1_clouds.py`, `2_persistence.py`, `3_distance.py` and `4_frequencies.py`
+    (notebooks/README.md). This notebook stays a description of the panel itself.
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(FREQ_COLOURS, NOT_STORED, PANEL, RECORDS, RUN, alt, mo, np, pd, periods, pv, stored):
-    def _seen():
-        _rows = []
-        for _f, _ts in periods.items():
-            for _t in _ts:
-                _n_clear = pv.column(PANEL, _f, "scores", _t, "n_clear")
-                _lost = pv.record(PANEL, _f, "scores", _t)["masked_pixels"]
-                _rows.append({"frequency": _f, "period": _t, "median n_clear": float(np.nanmedian(_n_clear)),
-                              "no clear image": float(np.mean(_n_clear == 0)), "under 1": float(np.mean(_n_clear < 1)),
-                              "quality lost": _lost["chips_with_lost_quality_values"] / len(_n_clear)})
-        return pd.DataFrame(_rows)
-
-    _name = f"seen_{PANEL.name}"
-    with mo.status.spinner(title="Reading n_clear of every period..."):
-        seen = stored(RUN, _name, _seen, RECORDS)
-    mo.stop(seen is None, mo.md(NOT_STORED))
-    mo.vstack([
-        alt.Chart(seen).mark_bar().encode(
-            x=alt.X("period:N", sort=None, title=None),
-            y=alt.Y("under 1:Q", title="share of chips with under 1 clear scene", axis=alt.Axis(format="%")),
-            color=alt.Color("frequency:N", scale=FREQ_COLOURS, title=None),
-            tooltip=["frequency", "period", alt.Tooltip("under 1:Q", format=".1%"), alt.Tooltip("no clear image:Q", format=".1%")],
-        ).properties(width="container", height=260),
-        mo.ui.table(seen.round(4), selection=None, page_size=12),
-    ])
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 6. Do detections depend on how well a chip was seen?
-
-    If the detector worked equally well under any sky, the share of chips detected would not
-    change with `n_clear`. A chip with no clear image at all is a black square and should never
-    be detected. Pooled over all periods of each frequency.
-
-    If the share rises with `n_clear`, the detector finds fewer mines where it sees less, so a
-    monthly count mixes mining with weather. That matters for any rule built on months
-    (isolation, persistence), and it is why `n_clear` is in the panel as a control.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(FREQ_COLOURS, NOT_STORED, PANEL, RECORDS, RUN, alt, mo, np, pd, periods, pv, stored):
-    _edges = [0, 1e-9, 1, 3, 10, np.inf]
-    _labels = ["none (0)", "under 1", "1 to 3", "3 to 10", "10 or more"]
-
-    def _by_seen():
-        _rows, _top = [], {}
-        for _f, _ts in periods.items():
-            _total, _hits, _black = np.zeros(5), np.zeros(5), 0.0
-            for _t in _ts:
-                _n_clear = pv.column(PANEL, _f, "scores", _t, "n_clear")
-                _conf = pv.column(PANEL, _f, "scores", _t, "confidence")
-                _raw = pv.column(PANEL, _f, "postprocess", _t, "det_raw")
-                _k = np.digitize(np.nan_to_num(_n_clear, nan=-1), _edges) - 1      # -1: no score
-                _ok = _k >= 0
-                _total += np.bincount(_k[_ok], minlength=5)[:5]
-                _hits += np.bincount(_k[_ok], weights=_raw[_ok], minlength=5)[:5]
-                _black = max(_black, float(np.nanmax(_conf[_n_clear == 0], initial=0)))
-            _rows += [{"frequency": _f, "n_clear": l, "chips": int(n), "detected (raw)": int(h),
-                       "per 1,000 chips": 1000 * h / n if n else np.nan} for l, n, h in zip(_labels, _total, _hits)]
-            _top[_f] = _black
-        return pd.DataFrame(_rows), _top
-
-    _name = f"by_seen_{PANEL.name}"
-    with mo.status.spinner(title="Reading every period..."):
-        _result = stored(RUN, _name, _by_seen, RECORDS)
-    mo.stop(_result is None, mo.md(NOT_STORED))
-    _table, _top = _result
-    mo.vstack([
-        alt.Chart(_table).mark_bar().encode(
-            x=alt.X("n_clear:N", sort=_labels, title="clear scenes per pixel (n_clear)"),
-            xOffset="frequency:N", y=alt.Y("per 1,000 chips:Q", title="raw detections per 1,000 chips"),
-            color=alt.Color("frequency:N", scale=FREQ_COLOURS, title=None),
-            tooltip=["frequency", "n_clear", alt.Tooltip("chips:Q", format=","), alt.Tooltip("per 1,000 chips:Q", format=".2f")],
-        ).properties(width="container", height=260),
-        mo.md(" ".join(f"Highest score of a {f} chip with no clear image: {v:.3f}." for f, v in _top.items())),
-        mo.ui.table(_table.round(3), selection=None, pagination=False),
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 7. Do the months agree with their quarter?
-
-    For each quarter whose three months are assembled: of the chips detected in the quarter,
-    the share also detected in at least one of its months and in all three; and the other way
-    round. A mine detected in its quarter but not in every month was often just not visible
-    that month; section 9 shows examples.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(NOT_STORED, PANEL, Period, RECORDS, RUN, mo, np, pd, periods, pv, stored):
-    def _agree():
-        _rows = []
-        for _q in periods["quarterly"]:
-            _months = [m.tag for m in Period.parse(_q).months()]
-            if not all(m in periods["monthly"] for m in _months):
-                continue
-            for _rule in ("det_raw", "det_stringent"):
-                _in_q = pv.column(PANEL, "quarterly", "postprocess", _q, _rule)
-                _in_m = np.stack([pv.column(PANEL, "monthly", "postprocess", m, _rule) for m in _months])
-                _any, _all = _in_m.any(axis=0), _in_m.all(axis=0)
-                _rows.append({"quarter": _q, "rule": _rule.removeprefix("det_"), "in quarter": int(_in_q.sum()),
-                              "also in a month": (_in_q & _any).sum() / max(_in_q.sum(), 1),
-                              "in all 3 months": (_in_q & _all).sum() / max(_in_q.sum(), 1),
-                              "in a month": int(_any.sum()),
-                              "also in the quarter": (_any & _in_q).sum() / max(_any.sum(), 1)})
-        return pd.DataFrame(_rows)
-
-    _name = f"agree_{PANEL.name}"
-    with mo.status.spinner(title="Comparing months with quarters..."):
-        _agree_table = stored(RUN, _name, _agree, RECORDS)
-    mo.stop(_agree_table is None, mo.md(NOT_STORED))
-    mo.ui.table(_agree_table.round(3), selection=None, pagination=False) if len(_agree_table) \
-        else mo.md("No quarter has all three of its months assembled yet.")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## 8. Where the detections are
+    ## 6. Where the detections are
 
     Every chip detected in the chosen quarter by the chosen rule, over the subregion outlines.
     Scroll to zoom, drag to pan, and click a chip (shift-click for several) to follow it in
-    section 9.
+    section 7.
     """)
     return
 
@@ -513,7 +379,7 @@ def _(PANEL, REPO, RUN, alt, gpd, mo, pd, pq, pv, quarter, rule, thin):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 9. Following chips through time
+    ## 7. Following chips through time
 
     Every period holds the same chips, so a chip can be followed from month to month and
     quarter to quarter. The chips shown are the ones clicked on the map, plus any IDs typed
@@ -577,7 +443,7 @@ def _(FREQ_COLOURS, PANEL, Period, alt, follow, mo, pd, periods, pv):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## 10. AMW's distances against distances on the Earth
+    ## 8. AMW's distances against distances on the Earth
 
     To decide whether a chip is isolated, AMW projects all chips of the period onto one flat
     map (the UTM zone in the middle of them) and measures distances there. Far from that zone

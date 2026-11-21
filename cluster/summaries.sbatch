@@ -4,9 +4,10 @@
 #     sbatch cluster/summaries.sbatch <run folder>
 #     sbatch cluster/summaries.sbatch <run folder> 2026Q2      also that quarter's example rows and distributions
 #
-# Runs each marimo notebook in notebooks/ once from top to bottom, as a plain Python
-# script. Whatever a notebook reads from the whole run (the checks, cloud cover per period,
-# months against quarters, the task statistics, ...) is stored in <run>/summaries/, which
+# First builds the analysis tables for notebooks 1 to 4 (notebooks/build_tables.py, into
+# <run>/analysis/; only new or changed periods are read). Then runs panel_overview and
+# amw_comparison once from top to bottom, as plain Python scripts. Whatever a notebook
+# reads from the whole run (the checks, the distributions, ...) is stored in <run>/summaries/, which
 # your coauthors can read but not write. Without it, those sections of panel_overview say
 # "Not stored yet" in the browser: on a full run they take too long to compute while a
 # page opens.
@@ -28,10 +29,16 @@ source cluster/goethe_env.sh               # run sbatch from the repository root
 umask 027                                  # the summaries: readable by the group, writable only by you
 echo "$(date '+%F %T')  summaries for ${RUN}, code $(git rev-parse --short HEAD)"
 S=0
-for NB in panel_overview explore_runs run_performance amw_comparison; do
+START=$(date +%s)
+if python notebooks/build_tables.py --run "${RUN}"; then
+    echo "$(date '+%F %T')  analysis tables: done ($(( ($(date +%s) - START) / 60 )) min)"
+else
+    echo "$(date '+%F %T')  analysis tables: FAILED (the error is above)"; S=1
+fi
+chmod -R g+rX "${RUN}/analysis" 2>/dev/null
+for NB in panel_overview amw_comparison; do
     ARGS=(--run "${RUN}")
     [ -n "${QUARTER}" ] && [ "${NB}" = panel_overview ] && ARGS+=(--period "${QUARTER}")
-    [ -n "${QUARTER}" ] && [ "${NB}" = explore_runs ] && ARGS+=(--quarter "${QUARTER}")
     START=$(date +%s)
     if python "notebooks/${NB}.py" "${ARGS[@]}"; then
         echo "$(date '+%F %T')  ${NB}: done ($(( ($(date +%s) - START) / 60 )) min)"
