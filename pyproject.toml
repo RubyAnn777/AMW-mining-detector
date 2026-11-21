@@ -41,6 +41,7 @@ dependencies = [
     "matplotlib==3.11.0",
     "marimo",
     "altair",
+    "plotly",
 ]
 
 [tool.uv]

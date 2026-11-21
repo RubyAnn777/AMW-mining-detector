@@ -20,10 +20,11 @@ def _():
     sys.path.insert(0, str(REPO / "amw_comparison"))
     sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
     import compare
+    import notebook_kit as kit
     from notebook_kit import thin
 
-    _ = alt.data_transformers.disable_max_rows()
-    return Path, alt, compare, json, mo, np, os, pd, thin
+    kit.altair_theme()
+    return Path, alt, compare, json, kit, mo, np, os, pd, thin
 
 
 @app.cell(hide_code=True)
@@ -72,6 +73,12 @@ def _(QUARTERS, RAW, RUN, mo):
 
 
 @app.cell(hide_code=True)
+def _(kit):
+    kit.glossary(["confidence", "amw_confidence", "outcome", "overlap (Jaccard)", "n_obs", "n_clear", "subregion"])
+    return
+
+
+@app.cell(hide_code=True)
 def _(MONTH_COLUMNS, chips, compare, threshold):
     def selected(q):
         """The chips of quarter q, with outcomes at the chosen threshold."""
@@ -89,8 +96,8 @@ def _(MONTH_COLUMNS, chips, compare, threshold):
 def _(mo, quarter, summary, threshold):
     _c = summary.loc[quarter.value]
     mo.callout(mo.md(
-        f"**{quarter.value}** at {threshold.value:.2f}: we detect {_c['ours total']:,} chips, AMW {_c['AMW total']:,}. "
-        f"Both detect {_c['both']:,}, only we {_c['only ours']:,}, only AMW {_c['only AMW']:,}; "
+        f"**{quarter.value}** at {threshold.value:.2f}: we detect {int(_c['ours total']):,} chips, AMW {int(_c['AMW total']):,}. "
+        f"Both detect {int(_c['both']):,}, only we {int(_c['only ours']):,}, only AMW {int(_c['only AMW']):,}; "
         f"overlap {_c['overlap (Jaccard)']:.3f}."), kind="info")
     return
 
@@ -107,17 +114,36 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(compare, mo, pd, threshold, view):
+def _(alt, compare, kit, mo, pd, threshold, view):
     _whole = ["both", "only ours", "only AMW", "ours total", "AMW total"]
     summary = pd.DataFrame({q: compare.agreement(d, threshold.value) for q, d in view.items()}).T.drop(columns="neither")
     summary[_whole] = summary[_whole].astype(int)
     _per_sub = pd.concat({q: d.groupby("subregion").apply(compare.agreement, threshold.value, include_groups=False)
                           for q, d in view.items()}, names=["quarter"]).drop(columns="neither")
     _per_sub[_whole] = _per_sub[_whole].astype(int)
-    mo.ui.tabs({
-        "per quarter": mo.ui.table(summary.round(4).rename_axis("quarter").reset_index(), selection=None, pagination=False),
-        "per subregion": mo.ui.table(_per_sub.round(4).reset_index(), selection=None),
-    })
+    _parts = ["both", "only ours", "only AMW"]
+    _colours = alt.Scale(domain=_parts, range=["#8a8984", kit.DETECTED, kit.AMW])
+    _long = _per_sub.reset_index().melt(id_vars=["quarter", "subregion"], value_vars=_parts, var_name="outcome", value_name="chips")
+    _long["subregion"] = _long["subregion"].astype(str)
+    _bars = alt.Chart(_long).mark_bar().encode(
+        y=alt.Y("subregion:N", title="subregion"), x=alt.X("chips:Q", title="detected chips", stack="normalize",
+                                                           axis=alt.Axis(format="%")),
+        color=alt.Color("outcome:N", sort=_parts, scale=_colours, title=None), order=alt.Order("order:Q"),
+        tooltip=["quarter", "subregion", "outcome", alt.Tooltip("chips:Q", format=",")],
+    ).transform_calculate(order=f"indexof({_parts}, datum.outcome)").properties(width=330, height=150).facet(
+        facet=alt.Facet("quarter:N", title=None), columns=2)
+    mo.vstack([
+        kit.figure(_bars, 1, "Who detects which chips, by quarter and subregion.",
+                   "Every chip detected by us or by AMW in a quarter, split into detected by both, only by us, and only by "
+                   "AMW. A bar that is all grey means the two runs agree completely in that subregion.",
+                   mark="one subregion in one quarter; segments add up to 100 % of the chips either side detects.",
+                   x="share of the chips detected by either side.", colour="grey: both; blue: only ours; red: only AMW.",
+                   sample=f"every chip in AMW's files or detected by us, at threshold {threshold.value:.2f}."),
+        mo.accordion({"The numbers behind Figure 1": mo.ui.tabs({
+            "per quarter": mo.ui.table(summary.round(4).rename_axis("quarter").reset_index(), selection=None, pagination=False),
+            "per subregion": mo.ui.table(_per_sub.round(4).reset_index(), selection=None),
+        })}),
+    ])
     return (summary,)
 
 
@@ -134,7 +160,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, compare, mo, pd, quarter, thin, threshold, view):
+def _(alt, compare, kit, mo, pd, quarter, thin, threshold, view):
     _gaps = pd.DataFrame({q: compare.score_gap(d) for q, d in view.items()}).T.rename_axis("quarter").reset_index()
     _d = view[quarter.value]
     _sample, _note = thin(_d.loc[_d["amw_confidence"].notna(), ["chip_id", "subregion", "outcome", "confidence", "amw_confidence"]])
@@ -142,7 +168,7 @@ def _(alt, compare, mo, pd, quarter, thin, threshold, view):
                 .encode(x=alt.X("amw_confidence:Q", title="AMW confidence", scale=alt.Scale(domain=[0.35, 1])),
                         y=alt.Y("confidence:Q", title="our confidence", scale=alt.Scale(domain=[0, 1])),
                         color=alt.Color("outcome:N", scale=alt.Scale(domain=["both", "only ours", "only AMW"],
-                                                                      range=["#8a8984", "#2a78d6", "#d64a2a"])),
+                                                                      range=["#8a8984", kit.DETECTED, kit.AMW])),
                         tooltip=["chip_id", "subregion", alt.Tooltip("confidence:Q", format=".4f"),
                                  alt.Tooltip("amw_confidence:Q", format=".4f")]))
     _diagonal = alt.Chart(pd.DataFrame({"x": [0, 1]})).mark_line(color="black", strokeDash=[4, 4], strokeWidth=0.7).encode(x="x", y="x")
@@ -151,10 +177,16 @@ def _(alt, compare, mo, pd, quarter, thin, threshold, view):
     _dis = _d[_d["outcome"].isin(["only ours", "only AMW"])]
     _near = int(((_dis["confidence"] - threshold.value).abs() <= 0.05).sum())
     mo.vstack([
-        mo.ui.table(_gaps.round(6), selection=None, pagination=False),
-        (_scatter + _diagonal + _cut).properties(width=420, height=380, title=quarter.value + (f" ({_note})" if _note else "")).interactive(),
-        mo.md(f"{quarter.value}: {len(_dis):,} chips where only one side detects; for {_near:,} of them our "
-              f"score is within 0.05 of the threshold."),
+        kit.figure((_scatter + _diagonal + _cut).properties(width=420, height=380).interactive(), 2,
+                   f"Our score against AMW's, {quarter.value}.",
+                   f"Every chip AMW lists, at its AMW confidence (horizontal) and our confidence (vertical). Points on the "
+                   f"dashed diagonal have the same score on both sides; the grey lines are the threshold. "
+                   f"{len(_dis):,} chips are detected by only one side; for {_near:,} of them our score is within 0.05 of "
+                   f"the threshold.",
+                   mark="one chip.", x="AMW's confidence (AMW lists only chips above 0.4).", y="our confidence.",
+                   colour="grey: both detect; blue: only ours; red: only AMW.",
+                   sample=f"chips in AMW's file for {quarter.value}" + (f"; {_note}" if _note else ".")),
+        mo.accordion({"Score gaps per quarter (table)": mo.ui.table(_gaps.round(6), selection=None, pagination=False)}),
     ])
     return
 
@@ -233,7 +265,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(alt, mo, np, pd, quarter, thin, view):
+def _(alt, kit, mo, np, pd, quarter, thin, view):
     _d = view[quarter.value]
     mo.stop(not {"amw_key_x", "amw_key_y"} <= set(_d.columns),
             mo.md("This run's comparison files have no chip locations (made before `amw_key_x/y` were kept)."))
@@ -247,17 +279,25 @@ def _(alt, mo, np, pd, quarter, thin, view):
     _rare, _note_rare = thin(_d[_d["kind"] != "same score"])     # the disagreements are drawn first,
     _same, _note = thin(_d[_d["kind"] == "same score"], max(10_000 - len(_rare), 2_000))   # the agreements fill up
     _shown = pd.concat([_same, _rare])
-    mo.ui.altair_chart(
+    _map = mo.ui.altair_chart(
         alt.Chart(_shown).mark_circle(size=14)
         .encode(x=alt.X("amw_key_x:Q", title="longitude", scale=alt.Scale(zero=False)),
                 y=alt.Y("amw_key_y:Q", title="latitude", scale=alt.Scale(zero=False)),
                 color=alt.Color("legend:N", title=None, sort=_order,
-                                scale=alt.Scale(domain=_order, range=["#a3a29c", "#e2a400", "#2a78d6", "#d64a2a"][:len(_order)])),
+                                scale=alt.Scale(domain=_order, range=["#a3a29c", "#e2a400", kit.DETECTED, kit.AMW][:len(_order)])),
                 tooltip=["chip_id", "subregion", "kind", alt.Tooltip("confidence:Q", format=".4f"),
                          alt.Tooltip("amw_confidence:Q", format=".4f"), alt.Tooltip("gap:Q", format=".2e")])
         .properties(width="container", height=480,
                     title="; ".join(f"{k}: {n}" for k, n in [("same score", _note), ("the others", _note_rare)] if n)).interactive(),
         chart_selection=False, legend_selection=True)
+    mo.vstack([_map, kit.caption(3, f"Where the two runs differ, {quarter.value}.",
+                                 "Every chip either side detected, at its position. The legend gives the number of chips in "
+                                 "each group; click a legend entry to show only that group.",
+                                 mark="one chip.", x="longitude.", y="latitude.",
+                                 colour="grey: both detect with the same score; yellow: both detect, different scores; "
+                                        "blue: only ours; red: only AMW.",
+                                 sample="all chips either side detected; when there are many, the agreeing chips are thinned "
+                                        "(the plot title says by how much) and every disagreement is kept.")])
     return
 
 
@@ -306,7 +346,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(MONTH_COLUMNS, mo, pd, threshold, view):
+def _(MONTH_COLUMNS, alt, kit, mo, pd, threshold, view):
     _rows, _by_months = {}, {}
     for _q, _d in view.items():
         if not MONTH_COLUMNS[_q]:
@@ -318,11 +358,28 @@ def _(MONTH_COLUMNS, mo, pd, threshold, view):
                      "overlap AMW / any month": (_amw & _any).sum() / max((_amw | _any).sum(), 1),
                      "overlap our quarter / any month": (_ours & _any).sum() / max((_ours | _any).sum(), 1)}
         _by_months[_q] = _d.loc[_amw, "months_detected"].value_counts().reindex(range(4), fill_value=0)
+    mo.stop(not _rows, mo.md("No months were scored for these quarters."))
+    _k = pd.DataFrame(_by_months).rename_axis("months").reset_index().melt(id_vars="months", var_name="quarter", value_name="chips")
+    _k["share"] = _k["chips"] / _k.groupby("quarter")["chips"].transform("sum")
+    _k["months detected"] = _k["months"].astype(str) + " of 3"
+    _dom = ["0 of 3", "1 of 3", "2 of 3", "3 of 3"]
+    _bars = alt.Chart(_k).mark_bar().encode(
+        y=alt.Y("quarter:N", title=None), x=alt.X("share:Q", title="share of AMW's detections", axis=alt.Axis(format="%")),
+        color=alt.Color("months detected:N", sort=_dom, scale=alt.Scale(domain=_dom, range=["#E69F00", "#c6dbef", "#6baed6", "#08519c"]),
+                        title="our months that also detect the chip"), order=alt.Order("months:Q"),
+        tooltip=["quarter", "months detected", alt.Tooltip("chips:Q", format=","), alt.Tooltip("share:Q", format=".1%")],
+    ).properties(width="container", height=34 * _k["quarter"].nunique())
     mo.vstack([
-        mo.ui.table(pd.DataFrame(_rows).T.round(3).rename_axis("quarter").reset_index(), selection=None, pagination=False),
-        mo.md("AMW's detections by how many of our months also detect them:"),
-        mo.ui.table(pd.DataFrame(_by_months).rename_axis("months detected").reset_index(), selection=None, pagination=False),
-    ]) if _rows else mo.md("No months were scored for these quarters.")
+        kit.figure(_bars, 4, "How many of our months find AMW's quarterly detections.",
+                   "Of the chips AMW detected in a quarter, the share that 0, 1, 2 or all 3 of our months of that quarter "
+                   "also detect. Orange: no month finds the chip.",
+                   mark="one quarter; segments add up to 100 %.", x="share of AMW's detections in the quarter.",
+                   colour="number of our months that detect the chip.",
+                   sample=f"chips AMW detected in the quarter, threshold {threshold.value:.2f}; quarters with months scored."),
+        mo.accordion({"The numbers (tables)": mo.vstack([
+            mo.ui.table(pd.DataFrame(_rows).T.round(3).rename_axis("quarter").reset_index(), selection=None, pagination=False),
+            mo.ui.table(pd.DataFrame(_by_months).rename_axis("months detected").reset_index(), selection=None, pagination=False)])}),
+    ])
     return
 
 

@@ -66,7 +66,7 @@ panel_pipeline/
 amw_comparison/   our scores against AMW's published ones (own README)
 cluster/          Goethe job scripts (Part B)
 configs/          one committed config per run
-notebooks/        marimo notebooks: panel_overview, explore_runs, amw_comparison, run_performance
+notebooks/        marimo notebooks: 1_clouds to 4_frequencies, panel_overview, amw_comparison, amw_history (own README)
 pyproject.toml, uv.lock   the Python packages and their exact versions (A1)
 core/ scripts/ utils/ docs/   AMW's own code and documents, unchanged; we import four files from core/
 ```
@@ -691,8 +691,9 @@ interactive pages. On Goethe they run next to the data, so nobody copies a run t
 - **Viewing (anyone in the group).** `sbatch /home/<group>/<user>/AMW-mining-detector/cluster/view.sbatch`
   starts the notebooks on a compute node of the `test` partition for two hours and writes
   `~/marimo-view-<jobid>.out` with the node and port to forward (VS Code's *Ports* tab, or
-  the `ssh -N -L` line it prints) and the address to open (`notebooks/GUIDE.md`). Coauthors get `panel_overview` and
-  `amw_comparison`; the repository's owner also gets `explore_runs` and `run_performance`.
+  the `ssh -N -L` line it prints) and the address to open (`notebooks/GUIDE.md`). Coauthors get notebooks 1 to 4,
+  `panel_overview`, `amw_comparison` and `amw_history`; the repository's owner also gets the archived ones
+  (`notebooks/archive/`).
   The notebooks open as apps: no code, nothing editable, nothing written into the run, and
   the run and panel come from the `sbatch` line rather than a dropdown.
 - **Why a compute node.** The pages read parquet files of up to 145 million rows; that is

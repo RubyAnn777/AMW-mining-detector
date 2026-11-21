@@ -36,12 +36,13 @@ export TF_CPP_MIN_LOG_LEVEL=2 OMP_NUM_THREADS=8
 PORT=$(( 20000 + $(id -u) % 20000 ))                       # the same port for you every time
 TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(16))")
 NODE=$(hostname -s)
-# Coauthors get the two notebooks about the results; the repository's owner (Ruby) also
-# gets her quality checks and the run's speed.
+# Coauthors get the notebooks about the results; the repository's owner (Ruby) also gets
+# the archived ones (notebooks/archive/: the old quality checks and the run's speed).
 if [ -O "${VIEW_REPO}" ]; then
     NOTEBOOKS=(notebooks/)
 else
-    NOTEBOOKS=(notebooks/panel_overview.py notebooks/amw_comparison.py)
+    NOTEBOOKS=(notebooks/1_clouds.py notebooks/2_persistence.py notebooks/3_distance.py notebooks/4_frequencies.py
+               notebooks/panel_overview.py notebooks/amw_comparison.py notebooks/amw_history.py)
 fi
 
 cat <<MSG

@@ -221,6 +221,21 @@ _DERIVED = [
      "For a quarter and one of its months: quarter only = detected in the quarter's picture but not "
      "in the month's; month only = the reverse; both = in both pictures.",
      "chip not scored in one of the two"),
+    ("outcome", "derived", "category",
+     "For one chip in one quarter, comparing our score with AMW's published one at the same "
+     "threshold: both = both detect it; only ours / only AMW = one side does; neither = neither does.",
+     "never"),
+    ("overlap (Jaccard)", "derived", "0 to 1",
+     "Chips both sides detect divided by chips either side detects: 1 = the same set of chips, "
+     "0 = no chip in common.",
+     "neither side detects anything"),
+    ("ring", "derived", "0, 1, 2, ...",
+     "How far a tile is from the nearest tile where AMW ever detected mining, counted in tiles: "
+     "0 = an AMW tile itself, 1 = one of the eight tiles around it, 2 = the next ring out, and so on.",
+     "never (tiles further than the largest ring are 'further')"),
+    ("priority 1", "derived", "set of tiles",
+     "The tiles we would score first: every AMW tile plus the chosen number of rings around them.",
+     "never"),
     ("months that caught it", "derived", "0 to 3",
      "For a chip detected in a quarter: in how many of that quarter's three months it was also "
      "detected.",
@@ -229,11 +244,11 @@ _DERIVED = [
 
 
 def describe(names: list[str]) -> list[dict]:
-    """[{variable, unit, meaning, missing}] for these names, panel columns and derived ones alike."""
+    """[{variable, unit, where, meaning, missing}] for these names, panel columns and derived ones alike."""
     rows = {}
-    for name, _where, kind, meaning, missing in _ROWS + _DERIVED:
+    for name, where, kind, meaning, missing in _ROWS + _DERIVED:
         for n in [name, *expand(name)]:
-            rows[n] = {"variable": n, "unit": kind, "meaning": meaning, "missing": missing}
+            rows[n] = {"variable": n, "unit": kind, "where": where, "meaning": meaning, "missing": missing}
     return [rows.get(n, {"variable": n, "unit": "?", "meaning": "not described in variables.py", "missing": "?"})
             for n in names]
 

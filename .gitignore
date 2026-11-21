@@ -82,3 +82,6 @@ __marimo__/
 .venv/
 # Copies of cluster runs on a laptop (README_cluster.md, section 8b); data, not code.
 cluster_output/
+
+# Static notebook exports to share (notebooks/README.md, step 4)
+reports/

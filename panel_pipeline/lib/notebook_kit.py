@@ -1,4 +1,4 @@
-"""Small helpers shared by the marimo notebooks (panel_overview, explore_runs, performance,
+"""Small helpers shared by the marimo notebooks (1 to 4, panel_overview, amw_comparison, amw_history,
 amw_comparison/compare).
 
 Two things live here:
@@ -214,7 +214,9 @@ def glossary(names: list[str], intro: str = ""):
     from variables import describe
     blocks = [intro] if intro else []
     for v in describe(names):
-        block = f"**`{v['variable']}`** · {v['unit']}  \n{v['meaning']}"
+        where = f" · stored in: {v['where']}" if v.get("where") and v["where"] != "derived" else (
+            " · computed in the notebooks" if v.get("where") == "derived" else "")
+        block = f"**`{v['variable']}`** · {v['unit']}{where}  \n{v['meaning']}"
         if v.get("missing") and v["missing"] != "never":
             block += f"  \n*Missing when:* {v['missing']}."
         blocks.append(block)

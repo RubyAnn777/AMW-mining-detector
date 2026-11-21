@@ -18,11 +18,12 @@ def _():
 
     REPO = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(REPO / "panel_pipeline" / "lib"))
+    import notebook_kit as kit
     from notebook_kit import thin
 
     COUNTRIES = REPO / "data" / "boundaries" / "south_america_countries.geojson"
-    _ = alt.data_transformers.disable_max_rows()
-    return COUNTRIES, Path, alt, json, mo, np, os, pd, thin
+    kit.altair_theme()
+    return COUNTRIES, Path, alt, json, kit, mo, np, os, pd, thin
 
 
 @app.cell(hide_code=True)
@@ -83,6 +84,12 @@ def _(MAX_RING, QUARTERS, RUN, SUMMARY, mo):
         mo.hstack([buffer, threshold, quarter], justify="start", gap=2),
     ])
     return buffer, quarter, threshold
+
+
+@app.cell(hide_code=True)
+def _(kit):
+    kit.glossary(["confidence", "ring", "priority 1", "subregion"])
+    return
 
 
 @app.cell(hide_code=True)
@@ -158,7 +165,7 @@ def _(coverage_table, mo, pd, work):
         _t[_c] = _t[_c].map(lambda v: f"{float(v):.1%}")
     _t = _t.astype({c: "Int64" for c in ["detected chips", "missed chips", "tiles with a detection", "missed tiles"]})
     _ = pd
-    mo.ui.table(_t.reset_index(), selection=None, pagination=False)
+    mo.accordion({"The coverage table (the numbers behind Figure 1)": mo.ui.table(_t.reset_index(), selection=None, pagination=False)})
     return
 
 
@@ -175,7 +182,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(MAX_RING, alt, coverage_table, mo, pd, work):
+def _(MAX_RING, alt, coverage_table, kit, mo, pd, work):
     _rows = []
     for _q in coverage_table.index:
         for _k in range(MAX_RING + 1):
@@ -189,8 +196,18 @@ def _(MAX_RING, alt, coverage_table, mo, pd, work):
                 scale=alt.Scale(zero=False)),
         color=alt.Color("quarter:N"),
         tooltip=["quarter", "area", alt.Tooltip("tiles scored:Q", format=".1%"), alt.Tooltip("detections caught:Q", format=".1%")])
-    mo.ui.altair_chart((_base.mark_line(strokeWidth=1.2) + _base.mark_point(filled=True, size=40))
-                       .properties(width="container", height=340), chart_selection=False, legend_selection=True)
+    mo.vstack([
+        mo.ui.altair_chart((_base.mark_line(strokeWidth=1.2) + _base.mark_point(filled=True, size=40))
+                           .properties(width="container", height=340), chart_selection=False, legend_selection=True),
+        kit.caption(1, "Detections caught against tiles scored.",
+                    "For each choice of priority 1 (AMW tiles only, then with one, two, three rings around them), the share "
+                    "of the run's tiles it contains and the share of our detected chips that lie in it. One line per quarter, "
+                    "and one per year with all its quarters pooled.",
+                    mark="one choice of priority 1 for one quarter or year.", x="share of all the run's tiles in priority 1 "
+                    "(roughly the share of compute).", y="share of our detected chips inside priority 1.",
+                    colour="quarter or year; click a legend entry to show only that one.",
+                    sample="chips we detected above the chosen threshold, from the compared quarters of 2025 on."),
+    ])
     return
 
 
@@ -207,7 +224,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(buffer, mo, pd, quarter, view):
+def _(alt, buffer, kit, mo, pd, quarter, view):
     _d = pd.concat(view.values(), ignore_index=True) if quarter.value == "all quarters" else view[quarter.value]
     _d = _d.assign(missed=_d["ring"] > buffer.value)
     _d["missed_tile"] = _d["tile"].where(_d["missed"])
@@ -216,7 +233,21 @@ def _(buffer, mo, pd, quarter, view):
                 tiles=("tile", "nunique"), missed_tiles=("missed_tile", "nunique"))
            .sort_values("detected_chips", ascending=False))
     _by["share missed"] = (_by["missed_chips"] / _by["detected_chips"]).map(lambda v: f"{v:.1%}")
-    mo.vstack([mo.md(f"*{quarter.value}*"), mo.ui.table(_by.reset_index(), selection=None, pagination=False)])
+    _long = _by.reset_index().assign(inside=lambda x: x["detected_chips"] - x["missed_chips"])
+    _long = _long.melt(id_vars="country", value_vars=["inside", "missed_chips"], var_name="where", value_name="chips")
+    _long["where"] = _long["where"].map({"inside": "inside priority 1", "missed_chips": "outside (missed)"})
+    _chart = alt.Chart(_long).mark_bar().encode(
+        y=alt.Y("country:N", sort=list(_by.index), title=None), x=alt.X("chips:Q", title="detected chips"),
+        color=alt.Color("where:N", scale=alt.Scale(domain=["inside priority 1", "outside (missed)"], range=["#8a8984", kit.AMW]),
+                        title=None),
+        tooltip=["country", "where", alt.Tooltip("chips:Q", format=",")]).properties(width="container", height=26 * len(_by))
+    mo.vstack([kit.figure(_chart, 2, f"Our detections per country, {quarter.value}.",
+                          "Chips we detected in each country, split into those inside the chosen priority-1 area and those "
+                          "outside it, which priority 1 would miss.",
+                          mark="one country; bar length = detected chips.", x="detected chips.",
+                          colour="grey: inside priority 1; red: outside.",
+                          sample=f"chips detected above the chosen threshold, {quarter.value}."),
+               mo.accordion({"The numbers (table)": mo.ui.table(_by.reset_index(), selection=None, pagination=False)})])
     return
 
 
@@ -234,7 +265,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(COUNTRIES, FAR, alt, buffer, mo, pd, quarter, ring_label, thin, tiles, view):
+def _(COUNTRIES, FAR, alt, buffer, kit, mo, pd, quarter, ring_label, thin, tiles, view):
     import geopandas as _gpd
     import shapely as _shp
 
@@ -275,8 +306,18 @@ def _(COUNTRIES, FAR, alt, buffer, mo, pd, quarter, ring_label, thin, tiles, vie
                    color=alt.Color("where:N", title=None, sort=_order, scale=alt.Scale(domain=_order, range=_colours)),
                    tooltip=["chip_id", "quarter", "country", "where", alt.Tooltip("confidence:Q", format=".3f")]))
     _title = "; ".join(f"{k}: {n}" for k, n in [("inside", _note), ("outside", _note_far), ("tiles", _note_p1)] if n)
-    mo.ui.altair_chart(alt.layer(_bg, *_layers, _fg).properties(width="container", height=600, title=_title).interactive(),
-                       chart_selection=False, legend_selection=True)
+    mo.vstack([
+        mo.ui.altair_chart(alt.layer(_bg, *_layers, _fg).properties(width="container", height=600, title=_title).interactive(),
+                           chart_selection=False, legend_selection=True),
+        kit.caption(3, f"Our detections and the priority-1 tiles, {quarter.value}.",
+                    "Every chip we detected, at its position and coloured by the ring of its tile, over the priority-1 tiles "
+                    "(grey squares) and country borders (black lines). Coloured points outside the grey are detections "
+                    "priority 1 would miss.",
+                    mark="one detected chip; grey square: one priority-1 tile.", x="longitude.", y="latitude.",
+                    colour="ring of the chip's tile: grey = AMW tile, then ring 1, 2, ..., and 'further'.",
+                    sample="chips detected above the threshold; when there are many, points are thinned (the plot title "
+                           "says by how much) and the missed ones are kept first."),
+    ])
     return
 
 

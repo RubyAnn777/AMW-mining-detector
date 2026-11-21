@@ -75,8 +75,8 @@ with `http://localhost:`.
 ### 4. Open the notebooks
 
 Copy the `http://localhost:...?access_token=...` address from the instructions into your
-normal browser (Chrome, Safari or Firefox), not VS Code's preview. You see two notebooks.
-Click one.
+normal browser (Chrome, Safari or Firefox), not VS Code's preview. You see the list of
+notebooks. Click one.
 
 ### 5. Stop
 
@@ -94,34 +94,26 @@ If you skip step 3, the job stops by itself after two hours.
 
 ## Reading the notebooks
 
-The settings are at the top of each notebook: the quarter and the detection rule in Panel
-Overview, the quarter and the detection threshold in AMW Comparison. Everything below
-updates when you change them. Every table has a download button for a CSV file, and every
-chart has a menu (`...`) to save it as an image. You can't change the data from these pages.
+The settings are at the top of each notebook (subregions, detection rule, frequency or
+quarter). Everything below updates when you change them. Each notebook starts with a
+fold-out list of the variables it uses and what they mean, and every figure has a caption
+saying what it shows: what one mark is, what the axes and colours are, and which chips and
+periods it covers. Every table has a download button for a CSV file, and every chart has a
+menu (`...`) to save it as an image. You can't change the data from these pages.
 
-**Panel Overview**, the panel itself:
-
-1. What is in the panel: periods, chips, and how many chips were scored.
-2. The panel as a table: example rows, what each variable means, and how each variable
-   is distributed.
-3. Checks: what must always hold in the data, and whether it does.
-4. How many chips each detection rule flags, per month and quarter.
-5. How well each period was seen: how many chips had (almost) no cloud-free image.
-6. Whether detections depend on how well a chip was seen.
-7. Whether the months agree with their quarter.
-8. A map of the detections. Scroll to zoom, drag to move, click a chip to follow it.
-9. The chips you clicked, or typed IDs of, through time.
-10. AMW's distances against distances on the Earth.
-
-**AMW Comparison**, our quarters against AMW's published detections:
-
-- At the top: how many chips we detect, how many AMW detects, and how much the two overlap.
-- Below: agreement per quarter and subregion, the two scores side by side, image quality,
-  why the scores differ (the last day of the quarter), a map of where they differ, border
-  chips, and our months against AMW's quarter.
-
-Move the threshold slider to see whether the disagreements are borderline scores or
-confident ones.
+- **1 Clouds**: how cloudy each period and place was, maps over time, and whether
+  detections depend on it.
+- **2 Persistence**: whether mines stay detected from period to period, the gaps when they
+  don't, and AMW's yearly rule.
+- **3 Distance**: how spread out the scores are, near misses, and distance to known mines.
+- **4 Frequencies**: months, quarters and AMW's quarters and years against each other,
+  down to single chips.
+- **Panel Overview**: the panel itself (contents, an example row, variables, checks,
+  counts, a map, chips through time).
+- **AMW Comparison**: our quarters against AMW's published detections. Move the threshold
+  slider to see whether the disagreements are borderline scores or confident ones.
+- **AMW History**: whether scoring AMW's known mining tiles first would have caught our
+  detections.
 
 ## Another run
 
