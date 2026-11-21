@@ -147,6 +147,97 @@ _ROWS = [
 ]
 
 
+# Variables the analysis notebooks derive (notebooks/build_tables.py and lib/analysis_tables.py).
+_DERIVED = [
+    ("vote_sd", "derived", "0 to 0.5",
+     "Standard deviation of the six votes (vote_1 ... vote_6) of one chip in one period: how much "
+     "the six models of the ensemble disagree. 0 = all six give the same score.",
+     "chip not scored"),
+    ("dist_km", "derived", "km",
+     "Distance from the chip's centre to the centre of the nearest known-mine chip, measured along "
+     "the Earth's surface. A known-mine chip itself has 0. Which detections count as known mines is "
+     "set in notebooks/analysis.yaml and printed at the top of each notebook.",
+     "no known mines are set"),
+    ("known mine", "derived", "true / false",
+     "The chip was detected (loose rule) in one of the known-mine years: AMW's yearly files for "
+     "2018 to 2024 for now, to be replaced year by year by our own quarters.",
+     "never"),
+    ("followed chip", "derived", "true / false",
+     "A chip whose full row is kept in every period: it scored at least 0.2 in some period, is in "
+     "one of AMW's files, or is a known mine. Persistence and drill-downs use these chips; counts "
+     "and histograms use every chip.",
+     "never"),
+    ("detected / missed", "derived", "D / M / ·",
+     "For one chip and the chosen rule: D = detected in the period, M = scored but not detected, "
+     "· = not scored (no data, which is neither).",
+     "never"),
+    ("gap", "derived", "periods",
+     "A run of M after a D. Closed: the chip was detected again after it (D M M D). Open: not "
+     "detected again up to the last period (D M M), which may mean the mine is gone or is still "
+     "being missed. Its length is the number of M in the run.",
+     "never"),
+    ("n_clear band", "derived", "5 groups",
+     "n_clear grouped: 0 | above 0, under 1 | 1 to under 3 | 3 to under 10 | 10 or more.",
+     "chip not scored"),
+    ("share_n_clear_0", "derived", "0 to 1",
+     "Share of a tile's (or map cell's) scored chips with n_clear = 0: the model saw only black.",
+     "no chip scored"),
+    ("share_n_clear_under_1", "derived", "0 to 1",
+     "Share of scored chips with n_clear under 1: on average less than one clear image per pixel.",
+     "no chip scored"),
+    ("detections per 1,000 chips", "derived", "count",
+     "Chips detected by the chosen rule per 1,000 scored chips: a rate, so areas and periods with "
+     "different numbers of chips can be compared.",
+     "no chip scored"),
+    ("AUC", "derived", "0.5 to 1",
+     "How well a cloud measure tells missed periods from detected periods of the same mines: the "
+     "probability that, of a randomly picked missed and detected period, the missed one had the "
+     "worse view. 0.5 = no better than a coin, 1 = perfect separation.",
+     "fewer than one missed and one detected period"),
+    ("AMW yearly status", "derived", "category",
+     "A chip under AMW's persistence rule (recipe A, core/persistence.py) on AMW's yearly pictures: "
+     "confirmed = detected in a year and in the next one; provisional = detected only in AMW's latest "
+     "year at the stricter stringent rule (waiting for the next year); otherwise not in the record.",
+     "chip in none of AMW's yearly files"),
+    ("quarterly onset", "derived", "quarter",
+     "The first quarter in which we detected the chip and detected it again within the next four "
+     "quarters: the quarterly counterpart of AMW's one-year window.",
+     "no such pair of detections"),
+    ("amw_confidence", "AMW's files", "0 to 1",
+     "AMW's own score for a chip in one of their files (yearly 2018 to 2025, quarterly from 2025). "
+     "Their files only list chips scoring 0.4 or more, so every listed chip counts as an AMW "
+     "detection under the raw rule; the loose and stringent rules are applied to their scores the "
+     "same way as to ours.",
+     "chip not in that AMW file"),
+    ("source", "derived", "category",
+     "Where a detection comes from: our months, our quarters, AMW's quarters or AMW's yearly "
+     "pictures. Each source is one picture per period, made from all images of that period.",
+     "never"),
+    ("unique chips", "derived", "count",
+     "Chips detected at least once in a set of periods, each chip counted once however often it "
+     "was detected. Cumulative unique chips grow as periods are added; they never go down.",
+     "never"),
+    ("quarter only / month only / both", "derived", "category",
+     "For a quarter and one of its months: quarter only = detected in the quarter's picture but not "
+     "in the month's; month only = the reverse; both = in both pictures.",
+     "chip not scored in one of the two"),
+    ("months that caught it", "derived", "0 to 3",
+     "For a chip detected in a quarter: in how many of that quarter's three months it was also "
+     "detected.",
+     "a month of the quarter not assembled"),
+]
+
+
+def describe(names: list[str]) -> list[dict]:
+    """[{variable, unit, meaning, missing}] for these names, panel columns and derived ones alike."""
+    rows = {}
+    for name, _where, kind, meaning, missing in _ROWS + _DERIVED:
+        for n in [name, *expand(name)]:
+            rows[n] = {"variable": n, "unit": kind, "meaning": meaning, "missing": missing}
+    return [rows.get(n, {"variable": n, "unit": "?", "meaning": "not described in variables.py", "missing": "?"})
+            for n in names]
+
+
 def expand(name: str) -> list[str]:
     """'vote_1 ... vote_6' -> vote_1..vote_6; 'a, b' -> a, b."""
     if name == "vote_1 ... vote_6":
