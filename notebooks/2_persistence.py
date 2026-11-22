@@ -194,8 +194,10 @@ def _(M, RULE_TEXT, SUB_TEXT, alt, at, hits, kit, measure, mo, np, pair_a, pair_
     _m = measure.value
     _v = hits[hits["period"].astype(str).isin([_a, _b])][["chip_id", "period", _m]]
     _v = _v[_v["chip_id"].isin(_grp.index)].assign(group=lambda d: d["chip_id"].map(_grp), period=lambda d: d["period"].astype(str))
-    _dens = alt.Chart(_v).transform_density(_m, groupby=["group", "period"], as_=[_m, "density"], extent=[
-        float(_v[_m].min()) if len(_v) else 0, float(_v[_m].quantile(0.99)) if len(_v) else 1]).mark_line().encode(
+    _lo = float(_v[_m].min()) if len(_v) else 0.0
+    _hi = float(_v[_m].quantile(0.99)) if len(_v) else 1.0
+    _kde = kit.density_lines(_v, _m, ["group", "period"], (_lo, _hi if _hi > _lo else _lo + 1))
+    _dens = alt.Chart(_kde).mark_line().encode(
         x=alt.X(f"{_m}:Q", title=f"{_m} in that period"), y=alt.Y("density:Q", title="density"),
         color=alt.Color("group:N", scale=alt.Scale(domain=_order, range=_colours), title=None),
         strokeDash=alt.StrokeDash("period:N", title="period"),
@@ -212,7 +214,8 @@ def _(M, RULE_TEXT, SUB_TEXT, alt, at, hits, kit, measure, mo, np, pair_a, pair_
                    mark="one line per group and period: a smoothed histogram (kernel density) of the measure.",
                    x=f"{_m} of the chip in that period, cut at the 99th percentile.",
                    y="density (the area under each curve is 1, so groups of different size can be compared).",
-                   colour="group as in Figure 4.", sample="the chips of Figure 4."),
+                   colour="group as in Figure 4.",
+                   sample="the chips of Figure 4; a group of more than 20,000 chips is smoothed from a fixed random 20,000."),
     ])
     return
 

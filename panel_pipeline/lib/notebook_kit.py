@@ -237,16 +237,23 @@ def period_map(cells, tags: list[str], layers: list[dict], height: int = 560):
 
     cells = cells.copy()
     cells["period"] = cells["period"].astype(str)
-    cells["id"] = cells["cell_lon"].round(4).astype(str) + "," + cells["cell_lat"].round(4).astype(str)
-    ids = cells.drop_duplicates("id")
+    key = cells["cell_lon"].round(4).astype(str) + "," + cells["cell_lat"].round(4).astype(str)
+    codes, uniques = pd.factorize(key)
+    cells["id"] = codes                                     # small integer ids keep the file small
+    ids = cells.drop_duplicates("id").sort_values("id")
     half = float(np.round(np.diff(np.unique(ids["cell_lon"])).min(), 4) / 2) if ids["cell_lon"].nunique() > 1 else 0.125
+    r4 = lambda v: round(float(v), 4)
+    # The cell outlines are sent once per map (plotly needs them on each trace) and never in the
+    # frames; coordinates are rounded to 4 decimals (about 10 m), which is far finer than a cell.
     geo = {"type": "FeatureCollection", "features": [
-        {"type": "Feature", "id": r.id, "properties": {},
-         "geometry": {"type": "Polygon", "coordinates": [[[r.cell_lon - half, r.cell_lat - half], [r.cell_lon + half, r.cell_lat - half],
-                                                          [r.cell_lon + half, r.cell_lat + half], [r.cell_lon - half, r.cell_lat + half],
-                                                          [r.cell_lon - half, r.cell_lat - half]]]}}
+        {"type": "Feature", "id": int(r.id),
+         "geometry": {"type": "Polygon", "coordinates": [[[r4(r.cell_lon - half), r4(r.cell_lat - half)],
+                                                          [r4(r.cell_lon + half), r4(r.cell_lat - half)],
+                                                          [r4(r.cell_lon + half), r4(r.cell_lat + half)],
+                                                          [r4(r.cell_lon - half), r4(r.cell_lat + half)],
+                                                          [r4(r.cell_lon - half), r4(r.cell_lat - half)]]]}}
         for r in ids.itertuples()]}
-    all_ids = ids["id"].tolist()
+    all_ids = [int(i) for i in ids["id"]]
     n = len(layers)
     width = 0.45 if n == 2 else 0.92
     lims = {}
@@ -259,7 +266,7 @@ def period_map(cells, tags: list[str], layers: list[dict], height: int = 560):
         c = cells[cells["period"] == tag].set_index("id")
         out = []
         for i, L in enumerate(layers):
-            z = c[L["column"]].reindex(all_ids).astype(float).round(4).tolist()
+            z = [None if v != v else float(f"{v:.3g}") for v in c[L["column"]].reindex(all_ids).astype(float)]
             extra = dict(geojson=geo, locations=all_ids) if full else {}
             lo, hi = lims[L["column"]]
             out.append(go.Choroplethmap(z=z, zmin=lo, zmax=hi, colorscale=L.get("colorscale", "Viridis"),
@@ -287,3 +294,28 @@ def period_map(cells, tags: list[str], layers: list[dict], height: int = 560):
                           buttons=[dict(label="▶ play", method="animate",
                                         args=[None, dict(frame=dict(duration=900, redraw=True), fromcurrent=True)])])])
     return fig
+
+
+def density_lines(df, value: str, by: list[str], extent: tuple[float, float], points: int = 150,
+                  per_group: int = 20_000) -> pd.DataFrame:
+    """Smoothed histograms (Gaussian kernel densities, Scott's bandwidth) of `value` per group,
+    computed here rather than in the browser, so a chart gets `points` rows per group instead of
+    one row per chip. Groups with more than `per_group` rows use a fixed random sample of them.
+    Returns rows of (*by, value, density); the area under each curve is 1 within `extent`."""
+    import numpy as np
+    from scipy.stats import gaussian_kde
+
+    grid = np.linspace(extent[0], extent[1], points)
+    out = []
+    for key, g in df.groupby(by, observed=True):
+        v = g[value].dropna().to_numpy(float)
+        if len(v) > per_group:
+            v = np.random.default_rng(0).choice(v, per_group, replace=False)
+        if len(v) < 5 or np.ptp(v) == 0:
+            continue
+        dens = gaussian_kde(v)(grid)
+        part = pd.DataFrame({value: grid, "density": dens})
+        for k, name in zip(key if isinstance(key, tuple) else (key,), by):
+            part[name] = k
+        out.append(part)
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=[*by, value, "density"])

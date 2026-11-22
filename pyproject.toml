@@ -172,3 +172,8 @@ constraint-dependencies = [
     "pyzmq==27.2.0",
     "threadpoolctl==3.7.0",
 ]
+
+# The analysis notebooks embed maps of every 0.25 degree cell over all periods; on a full run
+# that is a few MB, more than marimo shows by default (notebooks/README.md).
+[tool.marimo.runtime]
+output_max_bytes = 30_000_000

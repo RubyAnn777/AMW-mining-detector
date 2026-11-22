@@ -201,7 +201,7 @@ def _(FOLLOWED, alt, hits, kit, np, pd, rule, sample):
         _per_chip(hits[hits["chip_id"].isin(_known)]).assign(group="known mine"),
     ]).reset_index()
     _d = per_chip.assign(log_sd=np.log10(per_chip["sd_time"].clip(lower=1e-4)))
-    _chart = alt.Chart(_d).transform_density("log_sd", groupby=["group"], as_=["log_sd", "density"], extent=[-4, 0]).mark_line().encode(
+    _chart = alt.Chart(kit.density_lines(_d, "log_sd", ["group"], (-4, 0))).mark_line().encode(
         x=alt.X("log_sd:Q", title="standard deviation of the chip's confidence over time (log10; -2 = 0.01, -1 = 0.1)"),
         y=alt.Y("density:Q", title="density"),
         color=alt.Color("group:N", scale=alt.Scale(domain=["typical chip (sample)", "detected at least once", "known mine"],
@@ -214,7 +214,8 @@ def _(FOLLOWED, alt, hits, kit, np, pd, rule, sample):
                mark="one line per group: a kernel density of the chips' values (area 1 per group).",
                x="log10 of the over-time standard deviation; values under 0.0001 are set to 0.0001.",
                y="density.", colour="group of chips.",
-               sample="chips scored in at least 3 periods of the chosen frequency; the typical chips are the sample of one in 1,000.")
+               sample="chips scored in at least 3 periods of the chosen frequency; the typical chips are the sample of one in 1,000. "
+                      "A group of more than 20,000 chips is smoothed from a fixed random 20,000.")
     return (per_chip,)
 
 
