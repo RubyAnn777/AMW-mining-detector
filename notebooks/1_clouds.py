@@ -277,8 +277,8 @@ def _(A, SUBS, TILES, alt, at, cloud_measure, kit, mo, quarter_pick):
         _c["panel"] = f"{_t} ({'quarter' if _f == 'quarterly' else 'month'})"
         _parts.append(_c)
     import pandas as _pd
-    _cells = _pd.concat(_parts, ignore_index=True)
     _m = cloud_measure.value
+    _cells = _pd.concat(_parts, ignore_index=True)[["cell_lon", "cell_lat", "panel", _m]].round(4)
     _chart = alt.Chart(_cells).mark_square(size=40).encode(
         x=alt.X("cell_lon:Q", title="longitude", scale=alt.Scale(zero=False)),
         y=alt.Y("cell_lat:Q", title="latitude", scale=alt.Scale(zero=False)),

@@ -419,7 +419,9 @@ def _(PAIR, RULE, alt, at, kit, mo, month, pd, quarter):
     GROUP_COLOURS = ["#7f7f7f", kit.DETECTED, "#56B4E9"]
     _t = at.THRESHOLD[RULE]
     _brush = alt.selection_interval(encodings=["x", "y"])
-    _pts = alt.Chart(PAIR).mark_circle(size=28, opacity=0.6).encode(
+    _shown, _thin_note = kit.thin(PAIR[["chip_id", "group", "confidence_q", "confidence_m", "n_clear_m", "empty_share_m"]]
+                                  .astype({"chip_id": str}).round(3))
+    _pts = alt.Chart(_shown).mark_circle(size=28, opacity=0.6).encode(
         x=alt.X("confidence_q:Q", title=f"confidence in the quarter ({quarter.value})", scale=alt.Scale(domain=[0, 1])),
         y=alt.Y("confidence_m:Q", title=f"confidence in the month ({month.value})", scale=alt.Scale(domain=[0, 1])),
         color=alt.Color("group:N", sort=GROUPS, scale=alt.Scale(domain=GROUPS, range=GROUP_COLOURS), title=None),
@@ -439,7 +441,8 @@ def _(PAIR, RULE, alt, at, kit, mo, month, pd, quarter):
                f"near 0 the month saw nothing.",
                mark="one chip.", x=f"confidence in {quarter.value}.", y=f"confidence in {month.value}.",
                colour="grey: detected in both; dark blue: quarter only; light blue: month only.",
-               sample="the chosen subregions; chips scored in both pictures.")])
+               sample="the chosen subregions; chips scored in both pictures" + (f"; {_thin_note} (the table below and "
+                      "Figures 9 and 10 use every chip)." if _thin_note else "."))])
     return GROUPS, GROUP_COLOURS, scatter
 
 
@@ -460,7 +463,7 @@ def _(PAIR, mo, scatter):
 
 
 @app.cell(hide_code=True)
-def _(GROUPS, GROUP_COLOURS, PAIR, alt, at, kit, mo, month, quarter):
+def _(GROUPS, GROUP_COLOURS, PAIR, alt, at, kit, mo, month, np, pd, quarter):
     _bands = ["0", *at.NCLEAR_LABELS[1:]]
     _g = PAIR.groupby(["group", "month n_clear band"]).size().reset_index(name="chips")
     _g["share"] = _g["chips"] / _g.groupby("group")["chips"].transform("sum")
@@ -472,9 +475,11 @@ def _(GROUPS, GROUP_COLOURS, PAIR, alt, at, kit, mo, month, quarter):
         order=alt.Order("order:Q"),
         tooltip=["group", "month n_clear band", alt.Tooltip("chips:Q", format=","), alt.Tooltip("share:Q", format=".1%")],
     ).transform_calculate(order=f"indexof({_bands}, datum['month n_clear band'])").properties(width="container", height=110)
-    _c2 = alt.Chart(PAIR[PAIR["group"] == "quarter only"]).mark_bar(color=kit.DETECTED).encode(
-        x=alt.X("confidence_m:Q", bin=alt.Bin(step=0.025, extent=[0, 1]), title=f"confidence in {month.value}"),
-        y=alt.Y("count():Q", title="chips"),
+    _counts, _edges = np.histogram(PAIR.loc[PAIR["group"] == "quarter only", "confidence_m"].dropna(), bins=40, range=(0, 1))
+    _h = pd.DataFrame({"left": _edges[:-1], "right": _edges[1:], "chips": _counts})
+    _c2 = alt.Chart(_h).mark_bar(color=kit.DETECTED).encode(
+        x=alt.X("left:Q", title=f"confidence in {month.value}", scale=alt.Scale(domain=[0, 1])), x2="right:Q",
+        y=alt.Y("chips:Q", title="chips"), y2=alt.datum(0), tooltip=["left", "right", alt.Tooltip("chips:Q", format=",")],
     ).properties(width="container", height=180)
     mo.vstack([
         kit.figure(_c1, 9, "How clear the month's view was, by group.",
